@@ -265,7 +265,7 @@ Machine: Apple M1, 16 GB, torch 2.14.1 on MPS. Model: `google/embeddinggemma-2`,
   roughly **7.6 hours** for a first full pass. ~700-token chunks attend over shorter sequences than
   the ~1,000-token documents here, so real throughput should be somewhat better; treat 5 to 8 hours as
   the range and keep `--max-chunks-per-item` and resumability in the design.
-- Re-embed after review fixes (fallback text now ~3,600 chars starting at Abstract/Preface/Introduction/
+- Re-embed after review fixes (doc_format 3 then re-embedded 135 more items in 92 s; fallback text now ~3,600 chars starting at Abstract/Preface/Introduction/
   Contents, `doc_format` 2): 482 abstract-less items re-embedded, 413,528 tokens in 334.5 s encode
   (341.9 s wall-clock) = 1.44 items/s, ~1,236 tokens/s.
 - Golden-set eval, 36 queries (10+10 concept, 7 equation, 4 author, 5 acronym), mean fraction of expected
@@ -275,11 +275,11 @@ Machine: Apple M1, 16 GB, torch 2.14.1 on MPS. Model: `google/embeddinggemma-2`,
   |---|---|---|---|---|
   | keyword | 0.713 | 0.833 | 0.750 | 0.833 |
   | dense@768 | 0.706 | 0.832 | 0.778 | 0.861 |
-  | dense@512 | 0.692 | 0.775 | 0.778 | 0.806 |
-  | dense@256 | 0.694 | 0.753 | 0.778 | 0.806 |
+  | dense@512 | 0.692 | 0.803 | 0.778 | 0.833 |
+  | dense@256 | 0.694 | 0.725 | 0.778 | 0.778 |
   | hybrid@768 | 0.782 | 0.856 | 0.833 | 0.861 |
-  | hybrid@512 | 0.782 | 0.842 | 0.833 | 0.861 |
+  | hybrid@512 | 0.782 | 0.836 | 0.833 | 0.861 |
   | hybrid@256 | 0.776 | 0.836 | 0.833 | 0.861 |
 
-  Hybrid wins on recall@5/@10 and hit@5. Dense truncation to 512 now costs a little (0.832 to 0.775 recall@10),
+  Hybrid wins on recall@5/@10 and hit@5. Dense truncation to 512 now costs a little (0.832 to 0.803 recall@10; 256 drops to 0.725),
   so keep 768. The earlier 19-query set (superseded) gave hybrid 0.842 vs keyword 0.737 recall@10.
