@@ -66,8 +66,12 @@ def set_meta(conn: sqlite3.Connection, k: str, v: str) -> None:
     conn.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
 
 
-_FRONT_RES = [re.compile(rf"^[ \t]*(?:\d+\.?[ \t]+)?{w}[ \t]*$", re.I | re.M)
-              for w in ("abstract", "preface", "introduction", "contents|table of contents")]
+_FRONT_RES = [
+    # "Abstract", "Abstract This monograph...", "Abstract—...", "ABSTRACT:" (anything may follow on the line)
+    re.compile(r"^[ \t\f]*abstract\b", re.I | re.M),
+    *(re.compile(rf"^[ \t\f]*(?:\d+\.?[ \t]+)?(?:{w})[ \t]*$", re.I | re.M)
+      for w in ("preface", "introduction", "contents|table of contents")),
+]
 
 
 def skip_front_matter(text: str) -> str:
@@ -78,7 +82,7 @@ def skip_front_matter(text: str) -> str:
     for rx in _FRONT_RES:
         m = rx.search(head)
         if m:
-            return text[m.start():]
+            return text[m.start():].lstrip()
     return text
 
 

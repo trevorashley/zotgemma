@@ -171,3 +171,33 @@ def test_migrated_citekeys_only_fill_missing(monkeypatch):
     monkeypatch.setattr(citekeys, "get_citekeys", lambda keys: ({"A": "newA"}, "bbt"))
     index._refresh_citekeys(conn, it, index.SyncStats())
     assert dict(conn.execute("SELECT key, citekey FROM items"))["A"] == "newA"
+
+
+def test_skip_front_matter_inline_abstract_beats_later_headings():
+    from zsearch.index import skip_front_matter
+
+    t = "Title\n\x0cAbstract This monograph presents...\nmore\n1 Introduction\nbody\nContents\n"
+    assert skip_front_matter(t).startswith("Abstract This monograph")
+    assert skip_front_matter("x\nABSTRACT: we show\n").startswith("ABSTRACT:")
+    assert skip_front_matter("x\nAbstract—we show\n").startswith("Abstract—")
+
+
+def test_skip_front_matter_contents_regex_is_anchored():
+    from zsearch.index import skip_front_matter
+
+    t = "Journal X\nContents lists available at ScienceDirect\nstuff\nSee the table of contents for details\n"
+    assert skip_front_matter(t) == t  # neither line is a bare heading
+    assert skip_front_matter("a\nTable of Contents\nb").startswith("Table of Contents")
+
+
+def test_recheck_fallback_reembeds_only_abstractless(monkeypatch, tmp_path):
+    """doc_format change re-hashes abstract-less items but leaves abstract items alone."""
+    from zsearch import index
+
+    def cond(old, it, recheck):
+        return index.is_unchanged(old, it, 1.0, True, False) and not (recheck and not it.abstract)
+
+    old = {"date_modified": "2020", "fulltext_mtime": 1.0, "doc_text_hash": "h"}
+    assert cond(old, _item(abstract="a"), True)
+    assert not cond(old, _item(abstract=""), True)
+    assert cond(old, _item(abstract=""), False)

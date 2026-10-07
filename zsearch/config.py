@@ -21,7 +21,7 @@ MODEL_ID = "google/embeddinggemma-2"
 EMBED_DIM = 768
 SCHEMA_VERSION = "1"
 # Bump when the document-string recipe changes; abstract-less items are then re-hashed (and re-embedded if changed).
-DOC_FORMAT = "2"
+DOC_FORMAT = "3"
 
 # Documents without an abstract fall back to the start of the extracted text.
 FALLBACK_TEXT_CHARS = 3600  # roughly 900 tokens, so title + header + body fit in MAX_SEQ_LENGTH
