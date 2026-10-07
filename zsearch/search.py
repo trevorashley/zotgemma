@@ -118,7 +118,7 @@ def meta_ranking(conn: sqlite3.Connection, query: str, depth: int) -> list[int]:
 
 def fulltext_ranking(conn: sqlite3.Connection, query: str, depth: int) -> list[int]:
     """Zotero full-text BM25, rolled up from attachments to items (best attachment wins)."""
-    att_to_item = {r[0]: r[1] for r in conn.execute("SELECT attachment_id, item_id FROM items WHERE attachment_id IS NOT NULL")}
+    att_to_item = {r[0]: r[1] for r in conn.execute("SELECT attachment_id, item_id FROM attachments")}
     out: list[int] = []
     seen: set[int] = set()
     for h in fulltext.bm25(query, depth * 3):

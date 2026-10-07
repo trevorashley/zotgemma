@@ -43,7 +43,8 @@ class Item:
     date_modified: str
     tags: list[str] = field(default_factory=list)
     collections: list[str] = field(default_factory=list)
-    attachment: Attachment | None = None
+    attachment: Attachment | None = None  # best PDF: the one with the largest text cache
+    attachments: list[Attachment] = field(default_factory=list)  # every non-deleted PDF
     standalone: bool = False
 
 

@@ -48,7 +48,7 @@ def status(missing: Annotated[bool, typer.Option("--missing", help="List PDFs wi
             items = zotero_db.load_items(z)
     except zotero_db.ZoteroDBError as e:
         raise _fail(str(e))
-    pdfs = [i.attachment for i in items if i.attachment]
+    pdfs = [a for i in items for a in i.attachments]
     caches = sum(1 for p in config.STORAGE_DIR.glob("*/.zotero-ft-cache")) if config.STORAGE_DIR.exists() else 0
     try:
         indexed = fulltext.indexed_attachment_ids()
@@ -118,7 +118,7 @@ def index_cmd(force: Annotated[bool, typer.Option("--force", help="Re-embed ever
 def search_cmd(
     query: Annotated[str, typer.Argument(help="Natural-language query.")],
     mode: Annotated[str, typer.Option("--mode", "-m", help="dense | keyword | hybrid")] = "hybrid",
-    limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
+    limit: Annotated[int, typer.Option("--limit", "-n", min=1, help="Max results (>= 1).")] = 10,
     year: Annotated[Optional[str], typer.Option("--year", help="e.g. 2018, 2018:, :2005, 2010:2020")] = None,
     item_type: Annotated[Optional[str], typer.Option("--type", help="e.g. journalArticle, book")] = None,
     collection: Annotated[Optional[str], typer.Option("--collection", help="Substring of a collection path.")] = None,
@@ -131,7 +131,16 @@ def search_cmd(
         yf, yt = search_mod.parse_year_range(year)
     except ValueError:
         raise _fail(f"bad --year {year!r}; use forms like 2018, 2018:, :2005, 2010:2020")
+    if not query.strip():
+        raise _fail("query is empty")
+    if yf is not None and yt is not None and yf > yt:
+        raise _fail(f"--year range is inverted ({yf} > {yt})")
     conn = _open_index()
+    if item_type:
+        valid = [r[0] for r in conn.execute("SELECT DISTINCT item_type FROM items ORDER BY 1")]
+        if item_type not in valid:
+            conn.close()
+            raise _fail(f"unknown --type {item_type!r}; valid types: {', '.join(valid)}")
     try:
         hits = search_mod.search(conn, query, limit=limit, mode=mode, year_from=yf, year_to=yt,
                                  item_type=item_type, collection=collection)
@@ -161,6 +170,8 @@ def show(ref: Annotated[str, typer.Argument(help="Better BibTeX citekey or Zoter
     """Show metadata, abstract, collections, tags, attachment and annotations for one item."""
     conn = _open_index()
     row = conn.execute("SELECT * FROM items WHERE citekey = ? OR key = ?", (ref, ref)).fetchone()
+    att_ids = [r[0] for r in conn.execute(
+        "SELECT attachment_id FROM attachments WHERE item_id = ? ORDER BY is_best DESC, attachment_id", (row["item_id"],))] if row else []
     conn.close()
     if row is None:
         raise _fail(f"No item with citekey or key {ref!r} in the index.")
@@ -178,10 +189,10 @@ def show(ref: Annotated[str, typer.Argument(help="Better BibTeX citekey or Zoter
         console.print("[cyan]tags:[/cyan] " + escape(", ".join(row["tags"].split(index.TAG_SEP))))
     if row["abstract"]:
         console.print(f"\n[cyan]abstract:[/cyan]\n{escape(row['abstract'])}")
-    if row["attachment_id"]:
+    if att_ids:
         try:
             with zotero_db.snapshot() as z:
-                anns = zotero_db.load_annotations(z, [row["attachment_id"]])
+                anns = zotero_db.load_annotations(z, att_ids)
         except zotero_db.ZoteroDBError as e:
             err.print(f"[yellow]annotations unavailable: {escape(str(e))}[/yellow]")
             anns = []

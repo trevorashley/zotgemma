@@ -39,9 +39,14 @@ uv run zsearch search "sampling-based planning" --json
 uv run zsearch show <citekey-or-item-key>
 ```
 
+Keyword mode is sub-second. Dense and hybrid modes load the model on every CLI call (about 5 s);
+the Phase 3 MCP server keeps it resident and amortizes that cost.
+
 Each result carries cite key, year, authors, score, per-source ranks and a
 `zotero://select/library/items/<KEY>` link. `--year` accepts `2018`, `2018:`, `:2005`,
 `2010:2020`; `--collection` matches a substring of a collection path.
+
+Environment overrides: `ZSEARCH_ZOTERO_DIR`, `ZSEARCH_BBT_URL`, `ZSEARCH_INDEX_DB`.
 
 ## Eval
 

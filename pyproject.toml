@@ -23,10 +23,7 @@ zsearch = "zsearch.cli:app"
 zsearch-mcp = "zsearch.mcp_server:main"
 
 [dependency-groups]
-dev = [
-    "pillow>=12.3.0",
-    "pytest",
-]
+dev = ["pytest"]
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

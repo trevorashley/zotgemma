@@ -47,6 +47,23 @@ class EmbedderInfo:
     sanity: str
 
 
+def _load_model(model_id: str, device: str, dtype):
+    """Load the text-only model, preferring the local HF cache (no Hub traffic) and
+    falling back to a download if it is not cached yet."""
+    from sentence_transformers import SentenceTransformer
+    from transformers.utils import logging as hf_logging
+
+    hf_logging.disable_progress_bar()
+    hf_logging.set_verbosity_error()
+    kwargs = dict(device=device, model_kwargs={"dtype": dtype},
+                  config_kwargs={"vision_config": None, "audio_config": None})  # text-only (270M)
+    try:
+        return SentenceTransformer(model_id, local_files_only=True, **kwargs)
+    except (OSError, ValueError):
+        log.info("model not in local cache; downloading %s", model_id)
+        return SentenceTransformer(model_id, **kwargs)
+
+
 class Embedder:
     """Loads the model once and embeds queries and documents.
 
@@ -56,18 +73,13 @@ class Embedder:
 
     def __init__(self, model_id: str = config.MODEL_ID) -> None:
         import torch
-        from sentence_transformers import SentenceTransformer
-
         self.model_id = model_id
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
         candidates = [torch.bfloat16, torch.float32] if device != "cpu" else [torch.float32]
         self.info: EmbedderInfo | None = None
         last_err = "no candidate dtype tried"
         for dtype in candidates:
-            model = SentenceTransformer(
-                model_id, device=device, model_kwargs={"dtype": dtype},
-                config_kwargs={"vision_config": None, "audio_config": None},  # text-only (270M)
-            )
+            model = _load_model(model_id, device, dtype)
             model.max_seq_length = config.MAX_SEQ_LENGTH
             self._model = model
             ok, msg = self._sanity_check()
@@ -100,10 +112,6 @@ class Embedder:
         v = self._model.encode(texts, batch_size=batch_size, convert_to_numpy=True,
                                normalize_embeddings=True, show_progress_bar=False)
         return np.asarray(v, dtype=np.float32)
-
-    def embed_documents(self, docs: list[tuple[str, str]], batch_size: int = config.EMBED_BATCH_SIZE) -> np.ndarray:
-        """Embed ``(title, body)`` pairs as ``title: ... | text: ...`` documents."""
-        return self.embed_documents_raw([build_document(t, b) for t, b in docs], batch_size)
 
     def count_tokens(self, texts: list[str]) -> int:
         """Total token count (after truncation to max_seq_length) for throughput reporting."""

@@ -80,3 +80,73 @@ queries:
     expected: [UINVVDK3, YADK6FZU]
     kind: acronym
     note: acronym plus expansion
+  # --- equation / named result ----------------------------------------------------
+  - query: algebraic Riccati equation
+    expected: [AYH4XW3K, P5YPDPYN, QQKLBBEN, 448HGZJX, BL45F6VY]
+    kind: equation
+    note: items whose abstracts mention Riccati
+  - query: Lyapunov equation
+    expected: [BGULZ99Z]
+    kind: equation
+    note: Multi-Symmetric Lyapunov Equations
+  - query: Hamilton-Jacobi equation reachability
+    expected: [XUJUXN7C, BIFQWU6N, ARUIU8K7, 947WFI5C, HU4DMM8X, DDLNFEDZ]
+    kind: equation
+    note: Hamilton-Jacobi reachability papers
+  - query: Euler-Lagrange equations of a variational problem
+    expected: [ND7SEW5D, KYB3SVPC]
+    kind: equation
+    note: abstracts mention Euler-Lagrange
+  - query: Fokker-Planck Kolmogorov equation
+    expected: [6LL6BX5G]
+    kind: equation
+    note: Gram-Charlier mixture Bayesian estimation
+  - query: Navier-Stokes PDE
+    expected: [V3LL2PLF]
+    kind: equation
+    note: Safe PDE boundary control with neural operators
+  - query: Schrodinger bridge
+    expected: [X6SAKD3V]
+    kind: equation
+    note: Optimal transport in systems and control; ASCII spelling
+  # --- more concept queries -------------------------------------------------------
+  - query: joint angles and forces during a barbell squat
+    expected: [2PHEBGYG]
+    kind: concept
+    note: Schoenfeld 2010 squatting biomechanics (off-topic corner of the library)
+  - query: balancing a pendulum with a spinning flywheel as a teaching testbed
+    expected: [8P5YWIF8]
+    kind: concept
+    note: Block, Astrom, Spong reaction wheel pendulum
+  - query: combining neural networks with symbolic knowledge for reliable and explainable AI
+    expected: [63MYSQHZ]
+    kind: concept
+    note: Gaur and Sheth 2024
+  - query: Bayes filters, particle filters and mapping for mobile robots
+    expected: [QKSX7GV8]
+    kind: concept
+    note: Thrun et al. Probabilistic robotics (book)
+  - query: determining the orientation of a satellite from sensors and steering it
+    expected: [TWUUGXFL]
+    kind: concept
+    note: Markley and Crassidis spacecraft attitude book
+  - query: large pretrained vision-language models for embodied agents
+    expected: [Q9ECYTED]
+    kind: concept
+    note: Xu et al. 2024 survey
+  - query: where self-tuning and model-reference adaptive controllers came from and how they relate to machine learning
+    expected: [7HQ2L3AC]
+    kind: concept
+    note: Annaswamy and Fradkov historical perspective
+  - query: tiny robots that exploit capillary forces at the water surface
+    expected: [PK5SLC7X]
+    kind: concept
+    note: Barbot et al. 2023 microrobotics
+  - query: machine learning for simulating quantum, atomistic and continuum physical systems
+    expected: [E8VRMJ9U]
+    kind: concept
+    note: Zhang et al. 2025
+  - query: metrics for how fast and how noisily distributed averaging converges
+    expected: [8FU2PJ8V]
+    kind: concept
+    note: Lovisari and Zampieri consensus performance tutorial

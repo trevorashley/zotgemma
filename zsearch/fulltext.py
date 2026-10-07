@@ -85,7 +85,7 @@ def bm25(query: str, limit: int = 100) -> list[FulltextHit]:
             "SELECT rowid, rank FROM fulltextContent WHERE fulltextContent MATCH ? ORDER BY rank LIMIT ?",
             (match, limit),
         ).fetchall()
-    except sqlite3.OperationalError as e:
+    except sqlite3.DatabaseError as e:  # includes OperationalError and 'malformed' reads during Zotero writes
         raise RuntimeError(f"Full-text query failed for {match!r}: {e}") from e
     finally:
         conn.close()

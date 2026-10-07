@@ -28,6 +28,11 @@ CREATE INDEX IF NOT EXISTS items_attachment ON items(attachment_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS item_fts USING fts5(title, authors, abstract, tags);
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     item_id INTEGER PRIMARY KEY, embedding float[{config.EMBED_DIM}] distance_metric=cosine);
+CREATE TABLE IF NOT EXISTS attachments (
+    attachment_id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, key TEXT NOT NULL, path TEXT,
+    has_text INTEGER NOT NULL DEFAULT 0, text_bytes INTEGER NOT NULL DEFAULT 0, is_best INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS attachments_item ON attachments(item_id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -46,8 +51,7 @@ def open_index(path: Path | None = None, create: bool = False) -> sqlite3.Connec
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
-    if create:
-        conn.executescript(SCHEMA)
+    conn.executescript(SCHEMA)  # idempotent; adds tables introduced after the index was built
     return conn
 
 
@@ -62,13 +66,29 @@ def set_meta(conn: sqlite3.Connection, k: str, v: str) -> None:
     conn.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
 
 
+_FRONT_RES = [re.compile(rf"^[ \t]*(?:\d+\.?[ \t]+)?{w}[ \t]*$", re.I | re.M)
+              for w in ("abstract", "preface", "introduction", "contents|table of contents")]
+
+
+def skip_front_matter(text: str) -> str:
+    """Drop series/editor boilerplate: start at the first bare ``Abstract``, ``Preface``,
+    ``Introduction`` or ``Contents`` line (in that priority) within the first
+    ``FRONT_MATTER_SEARCH_CHARS`` characters. Returns ``text`` unchanged if none is found."""
+    head = text[: config.FRONT_MATTER_SEARCH_CHARS]
+    for rx in _FRONT_RES:
+        m = rx.search(head)
+        if m:
+            return text[m.start():]
+    return text
+
+
 def build_item_body(authors: str, year: int | None, venue: str, abstract: str, fallback_text: str = "") -> str:
     """Body of the document string: ``{authors} ({year}). {venue}. {abstract-or-text}``.
 
     Falls back to the first ``FALLBACK_TEXT_CHARS`` characters of ``fallback_text``
     (whitespace-collapsed) when there is no abstract. Empty parts are omitted.
     """
-    content = abstract.strip() or re.sub(r"\s+", " ", fallback_text).strip()[: config.FALLBACK_TEXT_CHARS]
+    content = abstract.strip() or re.sub(r"\s+", " ", skip_front_matter(fallback_text)).strip()[: config.FALLBACK_TEXT_CHARS]
     head = authors.strip()
     if year:
         head = f"{head} ({year})" if head else f"({year})"
@@ -81,6 +101,17 @@ def build_item_body(authors: str, year: int | None, venue: str, abstract: str, f
 def item_document(item: Item, fallback_text: str = "") -> str:
     """Full ``title: ... | text: ...`` document string for an item."""
     return build_document(item.title, build_item_body(item.authors, item.year, item.venue, item.abstract, fallback_text))
+
+
+def is_unchanged(old, item: Item, mtime: float, has_vec: bool, force: bool) -> bool:
+    """True if the stored row proves the vector is current (no re-read or re-embed needed).
+
+    A NULL ``doc_text_hash`` means an earlier sync was interrupted between writing metadata and
+    storing the vector, so the vector cannot be trusted.
+    """
+    return bool(old is not None and not force and has_vec and old["doc_text_hash"] is not None
+                and old["date_modified"] == item.date_modified
+                and (item.abstract or old["fulltext_mtime"] == mtime))
 
 
 def doc_hash(doc: str) -> str:
@@ -120,6 +151,7 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
     try:
         if get_meta(conn, "model_id") not in (None, config.MODEL_ID) or get_meta(conn, "schema_version") not in (None, config.SCHEMA_VERSION):
             force = True
+        recheck_fallback = get_meta(conn, "doc_format") != config.DOC_FORMAT
         existing = {r["item_id"]: r for r in conn.execute(
             "SELECT item_id, date_modified, fulltext_mtime, doc_text_hash, citekey FROM items")}
         have_vec = {r[0] for r in conn.execute("SELECT item_id FROM vec_items")}
@@ -132,9 +164,7 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
             mtime = fulltext.cache_mtime(att_key) if att_key else 0.0
             mtimes[it.item_id] = mtime
             old = existing.get(it.item_id)
-            unchanged = (old is not None and not force and it.item_id in have_vec
-                         and old["date_modified"] == it.date_modified
-                         and (it.abstract or old["fulltext_mtime"] == mtime))
+            unchanged = is_unchanged(old, it, mtime, it.item_id in have_vec, force) and not (recheck_fallback and not it.abstract)
             if unchanged:
                 hashes[it.item_id] = old["doc_text_hash"]
                 continue
@@ -179,11 +209,13 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
             conn.execute("DELETE FROM vec_items WHERE item_id = ?", (i,))
         stats.removed = len(gone)
 
+        _sync_attachments(conn, items)
         _refresh_citekeys(conn, items, stats)
         _rebuild_fts(conn)
         set_meta(conn, "model_id", config.MODEL_ID)
         set_meta(conn, "embed_dim", str(config.EMBED_DIM))
         set_meta(conn, "schema_version", config.SCHEMA_VERSION)
+        set_meta(conn, "doc_format", config.DOC_FORMAT)
         set_meta(conn, "last_sync", time.strftime("%Y-%m-%d %H:%M:%S"))
         if stats.dtype:
             set_meta(conn, "dtype", stats.dtype)
@@ -219,6 +251,20 @@ def _upsert_items(conn: sqlite3.Connection, items: list[Item], existing: dict, h
     conn.commit()
 
 
+def _sync_attachments(conn: sqlite3.Connection, items: list[Item]) -> None:
+    """Rebuild the ``attachments`` table: every non-deleted PDF of every item."""
+    conn.execute("DELETE FROM attachments")
+    for it in items:
+        for a in it.attachments:
+            try:
+                size = fulltext.cache_path(a.key).stat().st_size
+            except OSError:
+                size = 0
+            conn.execute("INSERT OR REPLACE INTO attachments VALUES (?,?,?,?,?,?,?)",
+                         (a.item_id, it.item_id, a.key, a.path, int(size > 0), size,
+                          int(it.attachment is not None and it.attachment.item_id == a.item_id)))
+
+
 def _refresh_citekeys(conn: sqlite3.Connection, items: list[Item], stats: SyncStats) -> None:
     """Update ``items.citekey``; keep cached values for keys the source cannot supply."""
     try:
@@ -226,8 +272,10 @@ def _refresh_citekeys(conn: sqlite3.Connection, items: list[Item], stats: SyncSt
     except citekeys.CitekeyError as e:
         mapping, source = {}, f"unavailable ({e})"
     stats.citekey_source = source
+    # Live BBT keys overwrite; the stale migrated snapshot only fills rows that have no key yet.
+    where = "" if source == "bbt" else " AND citekey IS NULL"
     for key, ck in mapping.items():
-        conn.execute("UPDATE items SET citekey = ? WHERE key = ?", (ck, key))
+        conn.execute(f"UPDATE items SET citekey = ? WHERE key = ?{where}", (ck, key))
     stats.citekeys_found = conn.execute("SELECT count(*) FROM items WHERE citekey IS NOT NULL").fetchone()[0]
 
 

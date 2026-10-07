@@ -110,3 +110,64 @@ def test_truncate_renormalizes():
     t = truncate(v, 2)
     assert t.shape == (1, 2) and abs(np.linalg.norm(t) - 1) < 1e-6
     assert truncate(v, 4) is v
+
+
+# --- sync / front matter ---------------------------------------------------
+def _item(mod="2020", abstract="a"):
+    return Item(1, "K", "book", "T", 2000, "", "", abstract, "", "", mod)
+
+
+def test_is_unchanged_requires_trusted_hash():
+    from zsearch.index import is_unchanged
+
+    old = {"date_modified": "2020", "fulltext_mtime": 1.0, "doc_text_hash": "h"}
+    assert is_unchanged(old, _item(), 1.0, True, False)
+    # interrupted sync left a NULL hash: must not be treated as unchanged
+    assert not is_unchanged({**old, "doc_text_hash": None}, _item(), 1.0, True, False)
+    assert not is_unchanged(old, _item(), 1.0, False, False)  # no vector
+    assert not is_unchanged(old, _item(mod="2021"), 1.0, True, False)
+    assert not is_unchanged(old, _item(), 1.0, True, True)  # force
+    assert not is_unchanged(None, _item(), 1.0, True, False)
+    assert not is_unchanged(old, _item(abstract=""), 2.0, True, False)  # text cache changed
+
+
+def test_skip_front_matter():
+    from zsearch.index import skip_front_matter
+
+    t = "Series editor blurb\nSpringer\n\nPreface\nThis book is about passivity.\n"
+    assert skip_front_matter(t).startswith("Preface")
+    t2 = "junk\nContents\n1 A\nAbstract\nReal abstract"
+    assert skip_front_matter(t2).startswith("Abstract")  # abstract outranks contents
+    assert skip_front_matter("no markers here") == "no markers here"
+    assert skip_front_matter("1. Introduction\nbody").startswith("1. Introduction")
+
+
+def test_best_attachment_prefers_largest_cache(tmp_path, monkeypatch):
+    from zsearch import config
+    from zsearch.models import Attachment
+    from zsearch.zotero_db import best_attachment
+
+    monkeypatch.setattr(config, "STORAGE_DIR", tmp_path)
+    for key, n in (("AAA", 5), ("BBB", 50)):
+        (tmp_path / key).mkdir()
+        (tmp_path / key / ".zotero-ft-cache").write_text("x" * n)
+    a, b = Attachment(1, "AAA", 9, None, None), Attachment(2, "BBB", 9, None, None)
+    assert best_attachment([a, b]) is b
+    assert best_attachment([]) is None
+
+
+def test_migrated_citekeys_only_fill_missing(monkeypatch):
+    import sqlite3
+
+    from zsearch import citekeys, index
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE items (key TEXT, citekey TEXT)")
+    conn.executemany("INSERT INTO items VALUES (?, ?)", [("A", "liveA"), ("B", None)])
+    it = [Item(1, "A", "book", "", None, "", "", "", "", "", ""), Item(2, "B", "book", "", None, "", "", "", "", "", "")]
+    monkeypatch.setattr(citekeys, "get_citekeys", lambda keys: ({"A": "staleA", "B": "staleB"}, "migrated"))
+    index._refresh_citekeys(conn, it, index.SyncStats())
+    assert dict(conn.execute("SELECT key, citekey FROM items")) == {"A": "liveA", "B": "staleB"}
+    monkeypatch.setattr(citekeys, "get_citekeys", lambda keys: ({"A": "newA"}, "bbt"))
+    index._refresh_citekeys(conn, it, index.SyncStats())
+    assert dict(conn.execute("SELECT key, citekey FROM items"))["A"] == "newA"

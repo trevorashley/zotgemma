@@ -79,6 +79,11 @@ Design rules:
   query-time experiment via `zsearch eval`, not a schema decision.
 - Hybrid by default: reciprocal rank fusion (k=60) over dense and BM25 lists.
   Pure modes stay available for debugging (`--mode dense|keyword|hybrid`).
+- Hybrid fusion is two-stage: the metadata-BM25 and Zotero full-text-BM25 lists are RRF-fused into one
+  keyword list, which is then RRF-fused (k=60) with the dense list. A flat 3-way RRF let the two keyword
+  lists outvote dense and scored worse (hit@10 0.789 vs 0.842 on the first 19-query golden set).
+- Every PDF of an item is tracked in the `attachments` table; the "best" one (largest text cache) feeds
+  the abstract-less fallback text, while full-text BM25 and annotations cover all of them.
 - Every result carries: citekey, title, authors, year, score, source of hit,
   and a `zotero://select/library/items/<KEY>` link.
 
@@ -260,6 +265,21 @@ Machine: Apple M1, 16 GB, torch 2.14.1 on MPS. Model: `google/embeddinggemma-2`,
   roughly **7.6 hours** for a first full pass. ~700-token chunks attend over shorter sequences than
   the ~1,000-token documents here, so real throughput should be somewhat better; treat 5 to 8 hours as
   the range and keep `--max-chunks-per-item` and resumability in the design.
-- Golden-set eval (19 queries, hit@10 = any expected item in top 10): keyword 0.74, dense@768 0.84,
-  hybrid 0.84; recall@10 (mean fraction of expected found) 0.737 / 0.808 / 0.842. Truncating dense
-  vectors to 512 loses nothing here (0.808); 256 loses a little (0.774).
+- Re-embed after review fixes (fallback text now ~3,600 chars starting at Abstract/Preface/Introduction/
+  Contents, `doc_format` 2): 482 abstract-less items re-embedded, 413,528 tokens in 334.5 s encode
+  (341.9 s wall-clock) = 1.44 items/s, ~1,236 tokens/s.
+- Golden-set eval, 36 queries (10+10 concept, 7 equation, 4 author, 5 acronym), mean fraction of expected
+  found (recall) / any-expected (hit):
+
+  | config | recall@5 | recall@10 | hit@5 | hit@10 |
+  |---|---|---|---|---|
+  | keyword | 0.713 | 0.833 | 0.750 | 0.833 |
+  | dense@768 | 0.706 | 0.832 | 0.778 | 0.861 |
+  | dense@512 | 0.692 | 0.775 | 0.778 | 0.806 |
+  | dense@256 | 0.694 | 0.753 | 0.778 | 0.806 |
+  | hybrid@768 | 0.782 | 0.856 | 0.833 | 0.861 |
+  | hybrid@512 | 0.782 | 0.842 | 0.833 | 0.861 |
+  | hybrid@256 | 0.776 | 0.836 | 0.833 | 0.861 |
+
+  Hybrid wins on recall@5/@10 and hit@5. Dense truncation to 512 now costs a little (0.832 to 0.775 recall@10),
+  so keep 768. The earlier 19-query set (superseded) gave hybrid 0.842 vs keyword 0.737 recall@10.

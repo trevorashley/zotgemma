@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import config
+from . import config, fulltext
 from .models import Annotation, Attachment, Item
 
 EXCLUDED_TYPES = ("attachment", "note", "annotation")
@@ -162,6 +162,20 @@ def _pdf_attachments(conn: sqlite3.Connection) -> list[Attachment]:
     return out
 
 
+def best_attachment(atts: list[Attachment]) -> Attachment | None:
+    """Pick the PDF with the largest ``.zotero-ft-cache``; ties and no-cache fall back to lowest itemID."""
+    if not atts:
+        return None
+
+    def size(a: Attachment) -> int:
+        try:
+            return fulltext.cache_path(a.key).stat().st_size
+        except OSError:
+            return 0
+
+    return max(atts, key=lambda a: (size(a), -a.item_id))
+
+
 def load_items(conn: sqlite3.Connection) -> list[Item]:
     """Load all bibliographic items plus standalone PDFs as :class:`Item` records."""
     q = ",".join("?" * len(EXCLUDED_TYPES))
@@ -178,10 +192,10 @@ def load_items(conn: sqlite3.Connection) -> list[Item]:
     creators, tags, colls = _creators(conn), _tags(conn), _collection_paths(conn)
     pdfs = _pdf_attachments(conn)
 
-    best: dict[int, Attachment] = {}  # parent itemID -> first PDF (lowest itemID)
+    by_parent: dict[int, list[Attachment]] = {}
     for a in pdfs:
         if a.parent_item_id is not None:
-            best.setdefault(a.parent_item_id, a)
+            by_parent.setdefault(a.parent_item_id, []).append(a)
 
     items: list[Item] = []
     for r in rows:
@@ -194,7 +208,8 @@ def load_items(conn: sqlite3.Connection) -> list[Item]:
             authors=creators.get(r["itemID"], ""), venue=venue, abstract=f.get("abstractNote", "").strip(),
             doi=f.get("DOI", ""), url=f.get("url", ""), date_modified=r["dateModified"],
             tags=sorted(tags.get(r["itemID"], [])), collections=sorted(colls.get(r["itemID"], [])),
-            attachment=best.get(r["itemID"]),
+            attachment=best_attachment(by_parent.get(r["itemID"], [])),
+            attachments=by_parent.get(r["itemID"], []),
         ))
 
     # Standalone PDFs (no parent) become their own items, titled from the filename.
@@ -203,12 +218,12 @@ def load_items(conn: sqlite3.Connection) -> list[Item]:
         if a.parent_item_id is not None:
             continue
         f = fields.get(a.item_id, {})
-        title = f.get("title") or (Path(a.filename).stem if a.filename else a.key)
+        title = f.get("title") or (Path(a.filename).stem.replace("_", " ") if a.filename else a.key)
         items.append(Item(
             item_id=a.item_id, key=a.key, item_type="attachment", title=title.strip(), year=parse_year(f.get("date")),
             authors=creators.get(a.item_id, ""), venue="", abstract="", doi="", url=f.get("url", ""),
             date_modified=dates.get(a.item_id, ""), tags=sorted(tags.get(a.item_id, [])),
-            collections=sorted(colls.get(a.item_id, [])), attachment=a, standalone=True,
+            collections=sorted(colls.get(a.item_id, [])), attachment=a, attachments=[a], standalone=True,
         ))
     return items
 
