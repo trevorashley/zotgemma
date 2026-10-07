@@ -21,11 +21,12 @@ MODEL_ID = "google/embeddinggemma-2"
 EMBED_DIM = 768
 SCHEMA_VERSION = "1"
 # Bump when the document-string recipe changes; abstract-less items are then re-hashed (and re-embedded if changed).
-DOC_FORMAT = "3"
+DOC_FORMAT = "4"
 
 # Documents without an abstract fall back to the start of the extracted text.
 FALLBACK_TEXT_CHARS = 3600  # roughly 900 tokens, so title + header + body fit in MAX_SEQ_LENGTH
-FRONT_MATTER_SEARCH_CHARS = 60000  # how far into the text to look for Abstract/Preface/Introduction/Contents
+ABSTRACT_SEARCH_CHARS = 10000  # an "Abstract" heading only counts this early (articles, monographs, reports)
+FRONT_MATTER_SEARCH_CHARS = 60000  # how far into the text to look for Preface/Introduction/Contents (books)
 MAX_SEQ_LENGTH = 1024
 EMBED_BATCH_SIZE = 16
 

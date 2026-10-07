@@ -66,20 +66,35 @@ def set_meta(conn: sqlite3.Connection, k: str, v: str) -> None:
     conn.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
 
 
-_FRONT_RES = [
-    # "Abstract", "Abstract This monograph...", "Abstract—...", "ABSTRACT:" (anything may follow on the line)
-    re.compile(r"^[ \t\f]*abstract\b", re.I | re.M),
-    *(re.compile(rf"^[ \t\f]*(?:\d+\.?[ \t]+)?(?:{w})[ \t]*$", re.I | re.M)
-      for w in ("preface", "introduction", "contents|table of contents")),
+# An abstract heading: "Abstract", "Abstract This monograph...", "Abstract—...", "ABSTRACT:".
+# The word must end the line, be followed by punctuation, or be followed by a capitalised sentence;
+# lines with dot leaders or a trailing page number (contents entries) are rejected. This keeps
+# "abstract features" (a figure caption) and "Abstract Factory ... 525" from counting.
+_ABSTRACT_RE = re.compile(
+    r"^[ \t\f]*abstract(?:[ \t]*$|[ \t]*[:.\-\u2014\u2013]|[ \t]+(?=(?-i:[A-Z])))"
+    r"(?![^\n]*(?:\.{4,}|(?:\.[ \t]+){3,}))(?![^\n]*\d[ \t]*$)",
+    re.I | re.M,
+)
+_HEADING_RES = [
+    re.compile(rf"^[ \t\f]*(?:\d+\.?[ \t]+)?(?:{w})[ \t]*$", re.I | re.M)
+    for w in ("preface", "introduction", "contents|table of contents")
 ]
 
 
 def skip_front_matter(text: str) -> str:
-    """Drop series/editor boilerplate: start at the first bare ``Abstract``, ``Preface``,
-    ``Introduction`` or ``Contents`` line (in that priority) within the first
-    ``FRONT_MATTER_SEARCH_CHARS`` characters. Returns ``text`` unchanged if none is found."""
+    """Drop series/editor boilerplate before the real content.
+
+    Priority: an ``Abstract`` heading within the first ``ABSTRACT_SEARCH_CHARS`` characters
+    (articles, monographs, reports), else the first bare ``Preface``, ``Introduction`` or
+    ``Contents`` line within ``FRONT_MATTER_SEARCH_CHARS`` (books). The short window for
+    ``Abstract`` stops chapter abstracts and body text deep inside a book from winning over
+    its preface. Returns ``text`` unchanged if nothing matches.
+    """
+    m = _ABSTRACT_RE.search(text[: config.ABSTRACT_SEARCH_CHARS])
+    if m:
+        return text[m.start():].lstrip()
     head = text[: config.FRONT_MATTER_SEARCH_CHARS]
-    for rx in _FRONT_RES:
+    for rx in _HEADING_RES:
         m = rx.search(head)
         if m:
             return text[m.start():].lstrip()
@@ -116,6 +131,15 @@ def is_unchanged(old, item: Item, mtime: float, has_vec: bool, force: bool) -> b
     return bool(old is not None and not force and has_vec and old["doc_text_hash"] is not None
                 and old["date_modified"] == item.date_modified
                 and (item.abstract or old["fulltext_mtime"] == mtime))
+
+
+def needs_recheck(old, item: Item, mtime: float, has_vec: bool, force: bool, recheck_fallback: bool) -> bool:
+    """True if the item's document must be rebuilt and re-hashed this sync.
+
+    That is whenever :func:`is_unchanged` fails, or when the document recipe for abstract-less
+    items changed (``recheck_fallback``) and this item has no abstract.
+    """
+    return not is_unchanged(old, item, mtime, has_vec, force) or (recheck_fallback and not item.abstract)
 
 
 def doc_hash(doc: str) -> str:
@@ -168,8 +192,7 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
             mtime = fulltext.cache_mtime(att_key) if att_key else 0.0
             mtimes[it.item_id] = mtime
             old = existing.get(it.item_id)
-            unchanged = is_unchanged(old, it, mtime, it.item_id in have_vec, force) and not (recheck_fallback and not it.abstract)
-            if unchanged:
+            if not needs_recheck(old, it, mtime, it.item_id in have_vec, force, recheck_fallback):
                 hashes[it.item_id] = old["doc_text_hash"]
                 continue
             text = "" if it.abstract or not att_key else fulltext.load_text(att_key)

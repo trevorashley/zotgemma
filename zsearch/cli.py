@@ -35,8 +35,8 @@ def _open_index():
 
 
 @app.callback()
-def _main(verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Log warnings and info.")] = False) -> None:
-    logging.basicConfig(level=logging.INFO if verbose else logging.ERROR, format="%(levelname)s %(message)s")
+def _main(verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Also log info messages (warnings are always shown).")] = False) -> None:
+    logging.basicConfig(level=logging.INFO if verbose else logging.WARNING, format="%(levelname)s %(message)s")
 
 
 @app.command()

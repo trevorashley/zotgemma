@@ -61,7 +61,7 @@ class Hit:
     item_type: str
     venue: str
     score: float
-    ranks: dict[str, int]  # per-source 1-based rank, e.g. {"dense": 3, "bm25": 1}
+    ranks: dict[str, int]  # per-source 1-based rank, e.g. {"dense": 3, "keyword": 1, "meta": 2, "fulltext": 1}
 
     @property
     def link(self) -> str:

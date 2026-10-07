@@ -265,9 +265,11 @@ Machine: Apple M1, 16 GB, torch 2.14.1 on MPS. Model: `google/embeddinggemma-2`,
   roughly **7.6 hours** for a first full pass. ~700-token chunks attend over shorter sequences than
   the ~1,000-token documents here, so real throughput should be somewhat better; treat 5 to 8 hours as
   the range and keep `--max-chunks-per-item` and resumability in the design.
-- Re-embed after review fixes (doc_format 3 then re-embedded 135 more items in 92 s; fallback text now ~3,600 chars starting at Abstract/Preface/Introduction/
-  Contents, `doc_format` 2): 482 abstract-less items re-embedded, 413,528 tokens in 334.5 s encode
-  (341.9 s wall-clock) = 1.44 items/s, ~1,236 tokens/s.
+- Re-embeds after review fixes: `doc_format` 2 (fallback text ~3,600 chars starting at
+  Abstract/Preface/Introduction/Contents) re-embedded 482 abstract-less items, 413,528 tokens in 334.5 s
+  encode = 1.44 items/s, ~1,236 tokens/s; `doc_format` 3 (inline "Abstract ..." headings) re-embedded
+  135 items in 92 s; `doc_format` 4 (an Abstract heading only counts within the first 10,000 chars, and
+  caption/contents lines are rejected) re-embedded the items listed in the git log for that commit.
 - Golden-set eval, 36 queries (10+10 concept, 7 equation, 4 author, 5 acronym), mean fraction of expected
   found (recall) / any-expected (hit):
 

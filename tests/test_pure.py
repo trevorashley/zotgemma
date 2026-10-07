@@ -67,9 +67,11 @@ def test_build_item_body_with_abstract():
 
 
 def test_build_item_body_fallback_text_truncated_and_collapsed():
+    from zsearch import config
+
     body = build_item_body("", None, "", "", "foo \n\n  bar" + " x" * 10000)
     assert body.startswith("foo bar x")
-    assert len(body) <= 6000
+    assert len(body) <= config.FALLBACK_TEXT_CHARS
 
 
 def test_item_document():
@@ -190,14 +192,26 @@ def test_skip_front_matter_contents_regex_is_anchored():
     assert skip_front_matter("a\nTable of Contents\nb").startswith("Table of Contents")
 
 
-def test_recheck_fallback_reembeds_only_abstractless(monkeypatch, tmp_path):
-    """doc_format change re-hashes abstract-less items but leaves abstract items alone."""
-    from zsearch import index
-
-    def cond(old, it, recheck):
-        return index.is_unchanged(old, it, 1.0, True, False) and not (recheck and not it.abstract)
+def test_needs_recheck_on_doc_format_change_only_for_abstractless():
+    """A doc_format bump re-hashes abstract-less items but leaves abstract items alone."""
+    from zsearch.index import needs_recheck
 
     old = {"date_modified": "2020", "fulltext_mtime": 1.0, "doc_text_hash": "h"}
-    assert cond(old, _item(abstract="a"), True)
-    assert not cond(old, _item(abstract=""), True)
-    assert cond(old, _item(abstract=""), False)
+    assert not needs_recheck(old, _item(abstract="a"), 1.0, True, False, True)
+    assert needs_recheck(old, _item(abstract=""), 1.0, True, False, True)
+    assert not needs_recheck(old, _item(abstract=""), 1.0, True, False, False)
+    assert needs_recheck(old, _item(mod="2021"), 1.0, True, False, False)  # ordinary change still counts
+
+
+def test_skip_front_matter_abstract_window_and_contents_lines():
+    """Deep "abstract" lines (chapter abstracts, captions, contents entries) must not win over a preface."""
+    from zsearch import config
+    from zsearch.index import skip_front_matter
+
+    filler = "lorem ipsum\n" * (config.ABSTRACT_SEARCH_CHARS // 12 + 10)
+    book = "Series blurb\nPreface\nWhy this book.\n" + filler + "Abstract This chapter covers...\n"
+    assert skip_front_matter(book).startswith("Preface")
+    assert skip_front_matter("x\nabstract features\nHanddesigned program\n") == "x\nabstract features\nHanddesigned program\n"
+    assert skip_front_matter("x\nAbstract Factory ** . . . 525\nContents\n").startswith("Contents")
+    assert skip_front_matter("x\nAbstract Factory (99)\nIntroduction\n").startswith("Introduction") is False  # capitalised continuation is accepted early on
+    assert skip_front_matter("x\nAbstract\nWe show...\n").startswith("Abstract\nWe show")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -15,6 +16,7 @@ from .embedder import get_embedder, truncate
 from .models import Hit
 
 MODES = ("dense", "keyword", "hybrid")
+log = logging.getLogger(__name__)
 
 
 def parse_year_range(spec: str | None) -> tuple[int | None, int | None]:
@@ -160,7 +162,11 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10, mode: str = "h
         dense_scores = dict(pairs)
     if mode in ("keyword", "hybrid"):
         rankings["meta"] = keep(meta_ranking(conn, query, depth))
-        rankings["fulltext"] = keep(fulltext_ranking(conn, query, depth))
+        try:
+            rankings["fulltext"] = keep(fulltext_ranking(conn, query, depth))
+        except RuntimeError as e:  # Zotero may be rebuilding its index; keep going on metadata + dense
+            log.warning("Zotero full-text index unavailable, searching without it: %s", e)
+            rankings["fulltext"] = []
 
     detail: dict[str, dict[str, int]] = {}  # per-item sub-source ranks, for transparency
     if mode == "hybrid":
