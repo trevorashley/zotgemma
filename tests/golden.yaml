@@ -1,0 +1,82 @@
+# Golden queries for `zsearch eval`. `expected` lists Zotero item keys; any one is an
+# acceptable answer. Built from the library itself (see notes for what each tests).
+queries:
+  # --- concept: paraphrase of the paper's idea, avoiding its title words ---------
+  - query: survey of randomized algorithms for finding collision-free robot paths in high-dimensional configuration spaces
+    expected: [XWK3STXE]
+    kind: concept
+    note: Orthey et al. 2024, sampling-based motion planning review
+  - query: how a group of agents reaches agreement on a common value over a communication graph, using the graph Laplacian
+    expected: [B9U7Z6P3]
+    kind: concept
+    note: Olfati-Saber, Fax, Murray 2007 consensus
+  - query: tree-structured task switching that keeps robot programs modular and reactive
+    expected: [4XU3X5CH]
+    kind: concept
+    note: Ogren and Sprague 2022 behavior trees
+  - query: convex relaxations for optimizing over orthogonal matrices with determinant one
+    expected: [DD27R68R]
+    kind: concept
+    note: Saunderson and Parrilo 2014, SDP over rotation matrices
+  - query: optimization problems with posynomial objectives made convex by a logarithmic change of variables
+    expected: [4WDJXLV3]
+    kind: concept
+    note: Boyd et al. 2007 geometric programming tutorial
+  - query: estimating bias and distortion of a three-axis magnetic field sensor using gyroscope and accelerometer data
+    expected: [JYKC9D4B, K7Z97J3V, IA2H27J6]
+    kind: concept
+    note: Kok et al. magnetometer calibration (three closely related papers)
+  - query: limits on stabilizing an unstable plant when the feedback must travel over a noisy limited-rate channel
+    expected: [FJ2HCVEQ]
+    kind: concept
+    note: Franceschetti and Khojasteh 2023, information in networked estimation and control
+  - query: Clifford algebra with a degenerate metric to represent points, lines, planes and rigid motions
+    expected: [INVVUE2R]
+    kind: concept
+    note: Gunn 2020 projective geometric algebra
+  - query: how far a stable matrix is from becoming unstable, computed for large sparse problems
+    expected: [8DFDDM8N]
+    kind: concept
+    note: Mengi 2018 distance to instability
+  - query: threads, mutexes, atomics and the memory model in modern C++
+    expected: [V7SARCP7]
+    kind: concept
+    note: Williams 2012 C++ concurrency in action (book, nearly empty abstract)
+  # --- author: names only ---------------------------------------------------------
+  - query: Kress-Gazit
+    expected: [BXEFJ77D, H8D6QWTI]
+    kind: author
+    note: two papers by this author in the library
+  - query: Karafyllis Krstic
+    expected: [44U7MRIY]
+    kind: author
+    note: co-author pair
+  - query: Ashley Andersson
+    expected: [F9C9HCFB]
+    kind: author
+    note: co-author pair
+  - query: Sarkka
+    expected: [7GAMJ45C, KWER5HYK, QVC55H29, 43SMQA2T, 3DEK2XAT, XB8YCJ63, C935INPQ]
+    kind: author
+    note: ASCII spelling of Särkkä; tests diacritic folding (unicode61 folds, embeddings may not)
+  # --- acronym / exact term -------------------------------------------------------
+  - query: ADMM
+    expected: [NIHYTZE3, PWZES7K9]
+    kind: acronym
+    note: alternating direction method of multipliers
+  - query: FreeRTOS
+    expected: [4C3HXC7E]
+    kind: acronym
+    note: exact product name
+  - query: CMake
+    expected: [MGL474E6, BKHEW322]
+    kind: acronym
+    note: two CMake books
+  - query: AMP approximate message passing
+    expected: [KTLF5ZAX]
+    kind: acronym
+    note: acronym plus expansion
+  - query: STL signal temporal logic monitor
+    expected: [UINVVDK3, YADK6FZU]
+    kind: acronym
+    note: acronym plus expansion

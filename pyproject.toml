@@ -1,0 +1,40 @@
+[project]
+name = "zotero-search"
+version = "0.1.0"
+description = "Semantic + keyword search over a local Zotero library"
+readme = "README.md"
+authors = [{ name = "Trevor Ashley", email = "trevor.ashley@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+    "torch",
+    "sentence-transformers",
+    "sqlite-vec",
+    "numpy",
+    "typer",
+    "rich",
+    "httpx",
+    "pyyaml",
+    "pillow>=12.3.0",
+    "torchvision>=0.29.1",
+]
+
+[project.scripts]
+zsearch = "zsearch.cli:app"
+zsearch-mcp = "zsearch.mcp_server:main"
+
+[dependency-groups]
+dev = [
+    "pillow>=12.3.0",
+    "pytest",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "zsearch"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
