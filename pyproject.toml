@@ -3,6 +3,8 @@ name = "zotgemma"
 version = "0.1.0"
 description = "A better Zotero search that leverages EmbeddingGemma 2."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Trevor Ashley", email = "trevor.ashley@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
