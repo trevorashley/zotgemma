@@ -153,7 +153,67 @@ Goal: "which papers in my library are about X" in under a second, from the shell
     truncate_dim in {768, 512, 256}. This decides the defaults, not guesswork.
 
 Phase 1 exit: hybrid recall@10 on the golden set is clearly better than keyword
-alone, incremental sync works, and you use it for a week.
+alone, incremental sync works, and you use it for a week. (Done 2026-10-07.)
+
+---
+
+## Phase 1.5: run on any machine, against any Zotero library
+
+Goal: `uv tool install` on a second computer, run `zsearch index`, and it finds and indexes that
+machine's Zotero library with no configuration.
+
+Assumptions (agreed 2026-10-08): Zotero 10 or newer (so `fulltext.sqlite` with FTS5 exists);
+Better BibTeX installed; `google/embeddinggemma-2` already in the Hugging Face cache; Linux with
+CUDA or macOS with Metal. Windows and Zotero 6/7 are out of scope.
+
+1. **Library discovery.** Resolve the data directory in this order: `--zotero-dir` flag,
+   `ZSEARCH_ZOTERO_DIR`, then Zotero's own preference `extensions.zotero.dataDir` read from
+   `prefs.js` of the default profile (`~/Library/Application Support/Zotero/profiles.ini` on
+   macOS, `~/.zotero/zotero/profiles.ini` on Linux), then `~/Zotero`. Fail with a message naming
+   each place looked. Refuse data dirs whose `zotero.sqlite` schema version predates Zotero 10
+   (check `version` table, `userdata`), naming the version found.
+
+2. **Index location.** Store the index under the user's data dir via `platformdirs`
+   (`~/Library/Application Support/zsearch/` or `~/.local/share/zsearch/`), one subdirectory per
+   library keyed by a hash of the data-dir path, so one install serves several libraries.
+   `--index` / `ZSEARCH_INDEX_DB` still override. `zsearch status` prints both paths.
+
+3. **Group libraries.** Load items from every library in `libraries`, carry `library_id` in
+   `items` and `attachments`, make `(library_id, key)` the unique key, and build links as
+   `zotero://select/library/items/KEY` for the user library and
+   `zotero://select/groups/<groupID>/items/KEY` otherwise (`groups.libraryID -> groupID`).
+   Verify what the BBT RPC `item.citationkey` accepts for group items (plain key vs
+   `libraryID:key`) and pass that. Add `--library` filter to `search`.
+
+4. **Any attachment with a text cache.** Index HTML snapshots and EPUBs alongside PDFs: select
+   attachments by the presence of `storage/<KEY>/.zotero-ft-cache`, not by `contentType`.
+   Linked files (`linkMode` 2) keep their text cache in storage, so only the displayed path
+   changes; resolve `attachments:` prefixes against `extensions.zotero.baseAttachmentPath`.
+
+5. **Cite keys with BBT only.** Drop the `better-bibtex.migrated` fallback. When Zotero is not
+   running, keep the cached keys and report "citekeys: cached (Zotero not running)". As a
+   secondary source for items BBT does not return, parse a `Citation Key:` line from the `extra`
+   field (BBT writes it there for pinned keys).
+
+6. **Device and batch size.** Keep the existing MPS/CUDA/CPU selection and bf16 check. Add
+   `--device` and `ZSEARCH_DEVICE` overrides, and pick the embedding batch size by device
+   (16 on MPS, 64 on CUDA, 8 on CPU) with `ZSEARCH_BATCH_SIZE` to override. Honour `HF_HOME`
+   and `HF_HUB_OFFLINE`; the model is loaded with `local_files_only=True` first, as now.
+
+7. **Packaging.** Relax `requires-python` to `>=3.11` and confirm the lock resolves on 3.11 to
+   3.14 for linux-x86_64 and macos-arm64. Document that sqlite-vec needs a Python with extension
+   loading (uv-managed and Homebrew Pythons have it; the macOS system Python does not) and that
+   `uv tool install git+<repo>` is the supported install. Add a `--version` flag.
+
+8. **Tests without a real library.** Build a tiny synthetic Zotero 10 data dir fixture (a
+   `zotero.sqlite` with the handful of tables we read, two items, one group item, one PDF and one
+   HTML attachment with text caches, a `fulltext.sqlite` with one FTS5 row) and run
+   `load_items`, `sync` with a stubbed embedder, and `search --mode keyword` against it in CI.
+   Make the golden set optional: `zsearch eval --golden PATH`, with `tests/golden.yaml` kept as
+   the example for this library.
+
+Phase 1.5 exit: a clean clone on a second machine indexes its own library with `zsearch index`
+and no flags; the synthetic-fixture tests pass without Zotero installed.
 
 ---
 
