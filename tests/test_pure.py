@@ -9,6 +9,14 @@ from zotgemma.search import parse_year_range, rrf_fuse
 from zotgemma.zotero_db import format_creator, parse_year
 
 import numpy as np
+import pytest
+
+from pathlib import Path
+
+from zotgemma import config, discovery
+from zotgemma.embedder import pick_device
+from zotgemma.models import Item
+from zotgemma.zotero_db import parse_extra_citekey, resolve_attachment_path
 
 
 # --- FTS sanitizer ---------------------------------------------------------
@@ -158,21 +166,26 @@ def test_best_attachment_prefers_largest_cache(tmp_path, monkeypatch):
     assert best_attachment([]) is None
 
 
-def test_migrated_citekeys_only_fill_missing(monkeypatch):
+def test_refresh_citekeys_cache_extra_and_live(monkeypatch):
     import sqlite3
 
     from zotgemma import citekeys, index
 
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE items (key TEXT, citekey TEXT)")
-    conn.executemany("INSERT INTO items VALUES (?, ?)", [("A", "liveA"), ("B", None)])
-    it = [Item(1, "A", "book", "", None, "", "", "", "", "", ""), Item(2, "B", "book", "", None, "", "", "", "", "", "")]
-    monkeypatch.setattr(citekeys, "get_citekeys", lambda keys: ({"A": "staleA", "B": "staleB"}, "migrated"))
-    index._refresh_citekeys(conn, it, index.SyncStats())
-    assert dict(conn.execute("SELECT key, citekey FROM items")) == {"A": "liveA", "B": "staleB"}
-    monkeypatch.setattr(citekeys, "get_citekeys", lambda keys: ({"A": "newA"}, "bbt"))
-    index._refresh_citekeys(conn, it, index.SyncStats())
-    assert dict(conn.execute("SELECT key, citekey FROM items"))["A"] == "newA"
+    conn.execute("CREATE TABLE items (library_id INT, key TEXT, citekey TEXT)")
+    conn.executemany("INSERT INTO items VALUES (1, ?, ?)", [("A", "cachedA"), ("B", None), ("C", "cachedC")])
+    mk = lambda k, extra="": Item(1, k, "book", "", None, "", "", "", "", "", "", extra_citekey=extra)  # noqa: E731
+    items = [mk("A"), mk("B", "extraB"), mk("C", "extraC")]
+    # Zotero down: cached keys kept; extra only fills rows that have none
+    monkeypatch.setattr(citekeys, "get_citekeys", lambda refs: ({}, citekeys.CACHED_SOURCE))
+    st = index.SyncStats()
+    index._refresh_citekeys(conn, items, st)
+    assert dict(conn.execute("SELECT key, citekey FROM items")) == {"A": "cachedA", "B": "extraB", "C": "cachedC"}
+    assert st.citekey_source == "cached (Zotero not running)" and st.citekeys_from_extra == 1
+    # Zotero up: BBT wins; extra is the secondary source for items BBT has no key for
+    monkeypatch.setattr(citekeys, "get_citekeys", lambda refs: ({(1, "A"): "liveA"}, "bbt"))
+    index._refresh_citekeys(conn, items, index.SyncStats())
+    assert dict(conn.execute("SELECT key, citekey FROM items")) == {"A": "liveA", "B": "extraB", "C": "extraC"}
 
 
 def test_skip_front_matter_inline_abstract_beats_later_headings():
@@ -215,3 +228,108 @@ def test_skip_front_matter_abstract_window_and_contents_lines():
     assert skip_front_matter("x\nAbstract Factory ** . . . 525\nContents\n").startswith("Contents")
     assert skip_front_matter("x\nAbstract Factory (99)\nIntroduction\n").startswith("Introduction") is False  # capitalised continuation is accepted early on
     assert skip_front_matter("x\nAbstract\nWe show...\n").startswith("Abstract\nWe show")
+
+
+# --- Phase 1.5: discovery, index location, device, extra field -------------------------------
+def _profile(home: Path, platform: str, data_dir: str | None, ini_body: str | None = None) -> Path:
+    ini = discovery.profiles_ini_path(home, platform)
+    prof = ini.parent / "Profiles" / "abc.default"
+    prof.mkdir(parents=True)
+    ini.write_text(ini_body or "[General]\n\n[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/abc.default\nDefault=1\n")
+    lines = ['user_pref("extensions.zotero.other", 1);']
+    if data_dir:
+        lines.append(f'user_pref("extensions.zotero.dataDir", "{data_dir}");')
+    (prof / "prefs.js").write_text("\n".join(lines))
+    return ini
+
+
+def _zdir(p: Path) -> Path:
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "zotero.sqlite").write_bytes(b"")
+    return p
+
+
+@pytest.mark.parametrize("platform,rel", [("darwin", "Library/Application Support/Zotero/profiles.ini"),
+                                          ("linux", ".zotero/zotero/profiles.ini")])
+def test_profiles_ini_paths(tmp_path, platform, rel):
+    assert discovery.profiles_ini_path(tmp_path, platform) == tmp_path / rel
+
+
+def test_discovery_order_flag_env_prefs_default(tmp_path):
+    custom, flag, envd = _zdir(tmp_path / "custom"), _zdir(tmp_path / "flag"), _zdir(tmp_path / "env")
+    _zdir(tmp_path / "Zotero")
+    _profile(tmp_path, "linux", str(custom))
+    d = lambda **kw: discovery.discover_zotero_dir(home=tmp_path, platform="linux", **kw)  # noqa: E731
+    assert d(flag=flag, env={"ZOTGEMMA_ZOTERO_DIR": str(envd)}).path == flag
+    assert d(env={"ZOTGEMMA_ZOTERO_DIR": str(envd)}).path == envd
+    got = d(env={})
+    assert got.path == custom and "extensions.zotero.dataDir" in got.source
+
+
+def test_discovery_falls_back_to_default_and_lists_places(tmp_path):
+    _profile(tmp_path, "linux", None)
+    with pytest.raises(discovery.DiscoveryError) as e:
+        discovery.discover_zotero_dir(home=tmp_path, platform="linux", env={})
+    assert "prefs.js" in str(e.value) and str(tmp_path / "Zotero") in str(e.value)
+    _zdir(tmp_path / "Zotero")
+    assert discovery.discover_zotero_dir(home=tmp_path, platform="linux", env={}).path == tmp_path / "Zotero"
+
+
+def test_discovery_explicit_source_is_final(tmp_path):
+    _zdir(tmp_path / "Zotero")
+    with pytest.raises(discovery.DiscoveryError, match="ZOTGEMMA_ZOTERO_DIR is .*nope"):
+        discovery.discover_zotero_dir(home=tmp_path, platform="linux", env={"ZOTGEMMA_ZOTERO_DIR": str(tmp_path / "nope")})
+
+
+def test_default_profile_selection(tmp_path):
+    ini = tmp_path / "profiles.ini"
+    ini.write_text("[Profile0]\nName=a\nIsRelative=1\nPath=Profiles/a\n\n[Profile1]\nName=b\nIsRelative=0\nPath=/abs/b\nDefault=1\n")
+    assert discovery.default_profile_dir(ini) == Path("/abs/b")
+    ini.write_text("[Profile0]\nName=a\nIsRelative=1\nPath=Profiles/a\n\n[Profile1]\nName=b\nPath=Profiles/b\n")
+    assert discovery.default_profile_dir(ini) is None  # two profiles, none marked default
+    ini.write_text("[Profile0]\nName=a\nIsRelative=1\nPath=Profiles/a\n")
+    assert discovery.default_profile_dir(ini) == tmp_path / "Profiles/a"
+
+
+def test_parse_prefs_unescapes_and_ignores_others():
+    text = (r'user_pref("extensions.zotero.dataDir", "C:\\Users\\x\\Zotero");' + "\n"
+            'user_pref("extensions.zotero.useDataDir", true);\nuser_pref("browser.x", "no");')
+    p = discovery.parse_prefs(text)
+    assert p == {"extensions.zotero.dataDir": "C:\\Users\\x\\Zotero", "extensions.zotero.useDataDir": "true"}
+
+
+def test_index_path_is_per_library_and_stable(tmp_path):
+    a, b = tmp_path / "A" / "Zotero", tmp_path / "B" / "Zotero"
+    a.mkdir(parents=True); b.mkdir(parents=True)
+    pa, pb = config.index_path_for(a, tmp_path / "data"), config.index_path_for(b, tmp_path / "data")
+    assert pa != pb and pa == config.index_path_for(a, tmp_path / "data")
+    assert pa.name == "index.sqlite" and pa.parent.parent == tmp_path / "data"
+
+
+def test_batch_size_by_device_and_override():
+    assert [config.default_batch_size(d, {}) for d in ("mps", "cuda", "cpu")] == [16, 64, 8]
+    assert config.default_batch_size("mps", {"ZOTGEMMA_BATCH_SIZE": "5"}) == 5
+    with pytest.raises(ValueError):
+        config.default_batch_size("mps", {"ZOTGEMMA_BATCH_SIZE": "0"})
+
+
+def test_pick_device():
+    assert pick_device(None, True, True) == "mps"
+    assert pick_device(None, False, True) == "cuda"
+    assert pick_device(None, False, False) == "cpu"
+    assert pick_device("cpu", True, True) == "cpu"
+    with pytest.raises(RuntimeError):
+        pick_device("cuda", True, False)
+
+
+def test_extra_citekey_parser():
+    assert parse_extra_citekey("Citation Key: smith2004\nfoo") == "smith2004"
+    assert parse_extra_citekey("note\n  citation key:   a_b-1  ") == "a_b-1"
+    assert parse_extra_citekey("Citation Keys: no") == "" and parse_extra_citekey(None) == ""
+
+
+def test_resolve_attachment_paths(tmp_path):
+    name, path = resolve_attachment_path("K", "attachments:papers/a.pdf", tmp_path)
+    assert name == "a.pdf" and path == str(tmp_path / "papers/a.pdf")
+    assert resolve_attachment_path("K", "/abs/x.pdf") == ("x.pdf", "/abs/x.pdf")
+    assert resolve_attachment_path("K", None) == (None, None)
