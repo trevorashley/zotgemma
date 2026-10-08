@@ -16,7 +16,8 @@ from pathlib import Path
 import sqlite_vec
 
 from . import config, citekeys, fulltext, zotero_db
-from .embedder import build_document, get_embedder
+from . import embedder
+from .embedder import build_document
 from .models import Item
 
 log = logging.getLogger(__name__)
@@ -311,7 +312,7 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
 
         # Embed in commit-sized slices so an interrupted run keeps its progress.
         if todo:
-            emb = get_embedder()
+            emb = embedder.get_embedder()
             stats.device, stats.dtype = emb.info.device, emb.info.dtype
             # persist metadata first so vectors always have a row
             _upsert_items(conn, items, existing, hashes, mtimes, hash_override_ids={it.item_id for it, _, _ in todo})

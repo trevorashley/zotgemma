@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from . import config
-from .embedder import get_embedder
+from . import embedder
 from .search import load_matrix, search
 
 KS = (5, 10)
@@ -56,7 +56,7 @@ def run_eval(conn: sqlite3.Connection, golden: list[GoldenQuery]) -> dict:
     ``recall@k`` is the mean fraction of expected items found; ``hit@k`` is the share of
     queries with at least one expected item found.
     """
-    emb = get_embedder()
+    emb = embedder.get_embedder()
     qvecs = [emb.embed_query(g.query) for g in golden]
     matrix = load_matrix(conn)
     results: dict[str, dict] = {}

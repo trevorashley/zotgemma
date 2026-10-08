@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import GROUP_ID, REAL_DATA_DIR, USER_KEYS, build_zotero_dir
-from zotgemma import citekeys, config, discovery, index, search, zotero_db
+from zotgemma import citekeys, config, discovery, embedder, index, search, zotero_db
 from zotgemma.cli import app
 from zotgemma.models import zotero_link
 
@@ -194,6 +194,12 @@ def test_tests_create_nothing_outside_tmp(env, monkeypatch, tmp_path):
     assert config.INDEX_DB.is_relative_to(tmp_path)
     assert runner.invoke(app, ["status"]).exit_code == 0
     assert _real_listing() == before
+    assert not list(tmp_path.rglob("models--*")) and not (tmp_path / "hf").exists()  # no HF cache created
+
+
+def test_model_loading_fails_fast_in_tests():
+    with pytest.raises(RuntimeError, match="tests must not load the model"):
+        embedder.Embedder(device="cpu")
 
 
 def test_sync_survives_item_id_change_with_same_key(env):

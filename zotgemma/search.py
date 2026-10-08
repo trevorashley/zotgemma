@@ -12,7 +12,8 @@ import numpy as np
 import sqlite_vec
 
 from . import config, fulltext
-from .embedder import get_embedder, truncate
+from . import embedder
+from .embedder import truncate
 from .models import Hit
 
 MODES = ("dense", "keyword", "hybrid")
@@ -179,7 +180,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10, mode: str = "h
     dense_scores: dict[int, float] = {}
     if mode in ("dense", "hybrid"):
         if qvec is None:
-            qvec = get_embedder().embed_query(query)
+            qvec = embedder.get_embedder().embed_query(query)
         pairs = dense_ranking(conn, qvec, config.CANDIDATE_DEPTH, allowed, dim, matrix)
         rankings["dense"] = [i for i, _ in pairs]
         dense_scores = dict(pairs)

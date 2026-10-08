@@ -181,6 +181,13 @@ def _hermetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     monkeypatch.setenv("ZOTGEMMA_INDEX_DB", str(tmp_path / "index.sqlite"))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+
+    def _no_model(*a, **k):
+        raise RuntimeError("tests must not load the model")
+
+    monkeypatch.setattr(embedder, "_load_model", _no_model)
     monkeypatch.delenv("ZOTGEMMA_DEVICE", raising=False)
     monkeypatch.delenv("ZOTGEMMA_BATCH_SIZE", raising=False)
     monkeypatch.setattr(config, "LEGACY_INDEX_DB", tmp_path / "no-such-legacy" / "index.sqlite")
@@ -205,6 +212,5 @@ def env(zotero_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config, "BBT_RPC_URL", "http://127.0.0.1:9/better-bibtex/json-rpc")
     config.configure(zotero_dir=zotero_dir, index_db=tmp_path / "index.sqlite")
     stub = StubEmbedder()
-    for mod in (index, search, embedder):
-        monkeypatch.setattr(mod, "get_embedder", lambda: stub, raising=False)
+    monkeypatch.setattr(embedder, "get_embedder", lambda: stub)  # the single patch point
     return zotero_dir
