@@ -231,12 +231,15 @@ def test_skip_front_matter_abstract_window_and_contents_lines():
 
 
 # --- Phase 1.5: discovery, index location, device, extra field -------------------------------
-def _profile(home: Path, platform: str, data_dir: str | None, ini_body: str | None = None) -> Path:
+def _profile(home: Path, platform: str, data_dir: str | None, ini_body: str | None = None,
+             use_data_dir: bool = True) -> Path:
     ini = discovery.profiles_ini_path(home, platform)
     prof = ini.parent / "Profiles" / "abc.default"
     prof.mkdir(parents=True)
     ini.write_text(ini_body or "[General]\n\n[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/abc.default\nDefault=1\n")
     lines = ['user_pref("extensions.zotero.other", 1);']
+    if data_dir and use_data_dir:
+        lines.append('user_pref("extensions.zotero.useDataDir", true);')
     if data_dir:
         lines.append(f'user_pref("extensions.zotero.dataDir", "{data_dir}");')
     (prof / "prefs.js").write_text("\n".join(lines))
@@ -333,3 +336,17 @@ def test_resolve_attachment_paths(tmp_path):
     assert name == "a.pdf" and path == str(tmp_path / "papers/a.pdf")
     assert resolve_attachment_path("K", "/abs/x.pdf") == ("x.pdf", "/abs/x.pdf")
     assert resolve_attachment_path("K", None) == (None, None)
+
+
+def test_stale_datadir_without_usedatadir_is_ignored(tmp_path):
+    stale = _zdir(tmp_path / "stale")
+    _profile(tmp_path, "linux", str(stale), use_data_dir=False)
+    _zdir(tmp_path / "Zotero")
+    got = discovery.discover_zotero_dir(home=tmp_path, platform="linux", env={})
+    assert got.path == tmp_path / "Zotero"
+
+
+def test_bad_batch_size_is_a_config_error(monkeypatch, zotero_dir):
+    monkeypatch.setenv("ZOTGEMMA_BATCH_SIZE", "abc")
+    with pytest.raises(discovery.DiscoveryError, match="ZOTGEMMA_BATCH_SIZE"):
+        config.configure(zotero_dir=zotero_dir)

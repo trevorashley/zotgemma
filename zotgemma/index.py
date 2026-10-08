@@ -21,15 +21,18 @@ from .models import Item
 
 log = logging.getLogger(__name__)
 
-SCHEMA = f"""
-CREATE TABLE IF NOT EXISTS items (
+_ITEMS_BODY = """(
     item_id INTEGER PRIMARY KEY, key TEXT NOT NULL, library_id INTEGER NOT NULL DEFAULT 1, group_id INTEGER,
     library_name TEXT NOT NULL DEFAULT '', citekey TEXT, item_type TEXT, title TEXT,
     year INTEGER, authors TEXT, venue TEXT, abstract TEXT, doi TEXT, url TEXT, tags TEXT, collections TEXT,
     date_modified TEXT, fulltext_mtime REAL, doc_text_hash TEXT, attachment_id INTEGER,
     attachment_key TEXT, attachment_path TEXT, standalone INTEGER DEFAULT 0,
     UNIQUE (library_id, key)
-);
+)"""
+
+SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS items {_ITEMS_BODY};
+
 CREATE INDEX IF NOT EXISTS items_citekey ON items(citekey);
 CREATE INDEX IF NOT EXISTS items_attachment ON items(attachment_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS item_fts USING fts5(title, authors, abstract, tags);
@@ -59,7 +62,7 @@ def migrate_legacy_index(dest: Path | None = None) -> Path | None:
     if not config.INDEX_DB_IS_DEFAULT or dest.exists() or not legacy.is_file():
         return None
     old_dir = Path(os.environ.get("ZOTGEMMA_ZOTERO_DIR") or Path.home() / "Zotero").expanduser()
-    if old_dir.resolve() != config.ZOTERO_DIR.resolve():
+    if old_dir.resolve() != config.ZOTERO_DIR.resolve() or not _legacy_matches_library(legacy):
         return None
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(legacy, dest)
@@ -67,21 +70,59 @@ def migrate_legacy_index(dest: Path | None = None) -> Path | None:
     return legacy
 
 
+def _legacy_matches_library(legacy: Path, sample: int = 25) -> bool:
+    """True if a sample of the legacy index's item keys all exist in the current Zotero library."""
+    try:
+        lc = sqlite3.connect(f"file:{legacy}?mode=ro", uri=True)
+        try:
+            keys = [r[0] for r in lc.execute("SELECT key FROM items ORDER BY random() LIMIT ?", (sample,))]
+        finally:
+            lc.close()
+        if not keys:
+            return False
+        with zotero_db.snapshot() as z:
+            q = ",".join("?" * len(keys))
+            found = z.execute(f"SELECT count(DISTINCT key) FROM items WHERE key IN ({q})", keys).fetchone()[0]
+        return found == len(set(keys))
+    except (sqlite3.Error, zotero_db.ZoteroDBError):
+        return False
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Upgrade an index built before Phase 1.5 in place (no re-embedding; vectors are keyed by item_id)."""
+    """Upgrade an index built before Phase 1.5 in place (no re-embedding; vectors are keyed by item_id).
+
+    The ``items`` rebuild is a single transaction, so a failure midway leaves the old table intact.
+    """
     cols = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
     if cols and "library_id" not in cols:
-        conn.executescript("""
-            DROP INDEX IF EXISTS items_citekey; DROP INDEX IF EXISTS items_attachment;
-            ALTER TABLE items RENAME TO items_old;""")
-        conn.executescript(SCHEMA)
-        shared = ", ".join(sorted(cols & {r[1] for r in conn.execute("PRAGMA table_info(items)")}))
-        conn.executescript(f"INSERT INTO items ({shared}) SELECT {shared} FROM items_old; DROP TABLE items_old;")
+        new_cols = [c for c in _NEW_ITEM_COLS if c in cols]
+        shared = ", ".join(new_cols)
+        conn.isolation_level = None  # manual transaction control
+        try:
+            conn.execute("BEGIN")
+            conn.execute(f"CREATE TABLE items_new {_ITEMS_BODY}")
+            conn.execute(f"INSERT INTO items_new ({shared}) SELECT {shared} FROM items")
+            conn.execute("DROP INDEX IF EXISTS items_citekey")
+            conn.execute("DROP INDEX IF EXISTS items_attachment")
+            conn.execute("DROP TABLE items")
+            conn.execute("ALTER TABLE items_new RENAME TO items")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.isolation_level = ""
     acols = {r[1] for r in conn.execute("PRAGMA table_info(attachments)")}
     if acols and "library_id" not in acols:
         conn.execute("ALTER TABLE attachments ADD COLUMN library_id INTEGER NOT NULL DEFAULT 1")
     if acols and "content_type" not in acols:
         conn.execute("ALTER TABLE attachments ADD COLUMN content_type TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+
+
+_NEW_ITEM_COLS = ("item_id", "key", "citekey", "item_type", "title", "year", "authors", "venue", "abstract", "doi",
+                  "url", "tags", "collections", "date_modified", "fulltext_mtime", "doc_text_hash", "attachment_id",
+                  "attachment_key", "attachment_path", "standalone")
 
 
 def open_index(path: Path | None = None, create: bool = False) -> sqlite3.Connection:
@@ -239,6 +280,17 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
             "SELECT item_id, date_modified, fulltext_mtime, doc_text_hash, citekey FROM items")}
         have_vec = {r[0] for r in conn.execute("SELECT item_id FROM vec_items")}
 
+        # Remove vanished items first: an item that kept its key under a new itemID (library reset,
+        # re-added group) would otherwise collide with its stale row on UNIQUE(library_id, key).
+        present = {it.item_id for it in items}
+        gone = [i for i in existing if i not in present]
+        for i in gone:
+            conn.execute("DELETE FROM items WHERE item_id = ?", (i,))
+            conn.execute("DELETE FROM vec_items WHERE item_id = ?", (i,))
+            have_vec.discard(i)
+        conn.commit()
+        stats.removed = len(gone)
+
         todo: list[tuple[Item, str, str]] = []  # (item, doc string, hash)
         hashes: dict[int, str] = {}
         mtimes: dict[int, float] = {}
@@ -282,14 +334,6 @@ def sync(progress: Callable[[int, int], None] | None = None, force: bool = False
                     progress(done, len(todo))
             stats.embedded = len(todo)
         _upsert_items(conn, items, existing, hashes, mtimes, hash_override_ids=set())
-
-        # remove vanished items
-        present = {it.item_id for it in items}
-        gone = [i for i in existing if i not in present]
-        for i in gone:
-            conn.execute("DELETE FROM items WHERE item_id = ?", (i,))
-            conn.execute("DELETE FROM vec_items WHERE item_id = ?", (i,))
-        stats.removed = len(gone)
 
         _sync_attachments(conn, items)
         _refresh_citekeys(conn, items, stats)

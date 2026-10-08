@@ -202,7 +202,7 @@ def search_cmd(
             conn.close()
             raise _fail(f"unknown --type {item_type!r}; valid types: {', '.join(valid)}")
     if library:
-        where, args = search_mod.library_clause(library)
+        where, args = search_mod.library_clause(library, conn)
         if not conn.execute(f"SELECT 1 FROM items WHERE {where} LIMIT 1", args).fetchone():
             libs = "; ".join(f"{n or 'user'} (group {g})" if g else f"{n or 'user'} (user)"
                              for g, n, _ in search_mod.list_libraries(conn))

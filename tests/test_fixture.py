@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 from typer.testing import CliRunner
 
-from conftest import GROUP_ID, USER_KEYS, build_zotero_dir
+from conftest import GROUP_ID, REAL_DATA_DIR, USER_KEYS, build_zotero_dir
 from zotgemma import citekeys, config, discovery, index, search, zotero_db
 from zotgemma.cli import app
 from zotgemma.models import zotero_link
@@ -155,3 +156,62 @@ def test_cli_version_and_missing_dir(monkeypatch, tmp_path):
 def test_zotero_link_forms():
     assert zotero_link("K1") == "zotero://select/library/items/K1"
     assert zotero_link("K1", 99) == "zotero://select/groups/99/items/K1"
+
+
+def _real_listing():
+    return sorted(str(p) for p in REAL_DATA_DIR.rglob("*")) if REAL_DATA_DIR.exists() else []
+
+
+def _default_location(env, monkeypatch):
+    """Reconfigure so the index is at the (HOME-redirected) default location."""
+    monkeypatch.delenv("ZOTGEMMA_INDEX_DB")
+    config.configure(zotero_dir=env)
+    assert config.INDEX_DB_IS_DEFAULT
+    return config.INDEX_DB
+
+
+def test_legacy_index_copied_only_when_it_belongs_to_this_library(env, monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy" / "index.sqlite"
+    legacy.parent.mkdir()
+    index.sync(index_path=legacy)  # an index built from this library
+    monkeypatch.setattr(config, "LEGACY_INDEX_DB", legacy)
+    dest = _default_location(env, monkeypatch)
+    assert str(dest).startswith(str(tmp_path / "home"))
+    assert index.migrate_legacy_index() == legacy and dest.is_file()
+    # a legacy index of some other library (keys absent from this zotero.sqlite) is not adopted
+    dest.unlink()
+    conn = sqlite3.connect(legacy)
+    conn.execute("UPDATE items SET key = 'ZZ' || key")
+    conn.commit(); conn.close()
+    assert index.migrate_legacy_index() is None and not dest.exists()
+
+
+def test_tests_create_nothing_outside_tmp(env, monkeypatch, tmp_path):
+    before = _real_listing()
+    runner = CliRunner()
+    monkeypatch.delenv("ZOTGEMMA_INDEX_DB")
+    assert runner.invoke(app, ["index"]).exit_code == 0
+    assert config.INDEX_DB.is_relative_to(tmp_path)
+    assert runner.invoke(app, ["status"]).exit_code == 0
+    assert _real_listing() == before
+
+
+def test_sync_survives_item_id_change_with_same_key(env):
+    index.sync()
+    conn = index.open_index()
+    conn.execute("UPDATE items SET item_id = item_id + 1000 WHERE key = ?", (USER_KEYS["paper1"],))
+    conn.execute("UPDATE vec_items SET item_id = item_id + 1000 WHERE item_id = 1")
+    conn.commit(); conn.close()
+    s = index.sync(force=True)
+    assert s.removed == 1 and s.embedded == 3
+
+
+def test_numeric_library_spec_falls_back_to_name(env, tmp_path):
+    index.sync()
+    conn = index.open_index()
+    try:
+        assert search.library_clause(str(GROUP_ID), conn)[0] == "group_id = ?"
+        conn.execute("UPDATE items SET library_name = 'Group 2024' WHERE group_id IS NOT NULL")
+        assert search.library_clause("2024", conn)[0].startswith("lower(library_name)")
+    finally:
+        conn.close()

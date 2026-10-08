@@ -115,13 +115,15 @@ def discover_zotero_dir(flag: str | Path | None = None, env: Mapping[str, str] |
 
     looked: list[str] = []
     pref_dir = prefs.get("extensions.zotero.dataDir")
-    if pref_dir and prefs.get("extensions.zotero.useDataDir", "true") != "false":
+    # Zotero's default for useDataDir is false (and prefs.js omits default-valued prefs), so a leftover
+    # dataDir line without useDataDir=true is stale and must be ignored.
+    if pref_dir and prefs.get("extensions.zotero.useDataDir") == "true":
         p = Path(pref_dir).expanduser()
         if ok(p):
             return Discovered(p, f"extensions.zotero.dataDir in {prefs_js}", prefs)
         looked.append(f"extensions.zotero.dataDir = {p} (from {prefs_js}): no zotero.sqlite there")
     elif prefs_js:
-        looked.append(f"{prefs_js}: no custom extensions.zotero.dataDir set")
+        looked.append(f"{prefs_js}: no custom data directory in use (extensions.zotero.useDataDir is not true)")
     else:
         looked.append(f"{profiles_ini_path(home, platform)}: not found, or no default profile with a prefs.js")
     default = home / "Zotero"

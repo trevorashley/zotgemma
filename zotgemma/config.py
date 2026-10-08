@@ -107,6 +107,10 @@ def configure(zotero_dir: str | Path | None = None, index_db: str | Path | None 
     INDEX_DB = Path(idx).expanduser() if idx else index_path_for(ZOTERO_DIR)
 
     set_device(device)
+    try:
+        default_batch_size("cpu")  # validate ZOTGEMMA_BATCH_SIZE now so the CLI reports it cleanly
+    except ValueError as e:
+        raise discovery.DiscoveryError(str(e)) from None
     return found
 
 

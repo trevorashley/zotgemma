@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 
 import numpy as np
+import platformdirs
 import pytest
 
 from zotgemma import config, citekeys, embedder, index, search
@@ -166,7 +167,23 @@ def zotero_dir(tmp_path: Path) -> Path:
 
 
 _CONFIG_NAMES = ("ZOTERO_DIR", "ZOTERO_SQLITE", "FULLTEXT_SQLITE", "STORAGE_DIR", "DATA_DIR_SOURCE",
-                 "BASE_ATTACHMENT_PATH", "INDEX_DB", "INDEX_DB_IS_DEFAULT", "DEVICE", "BBT_RPC_URL")
+                 "BASE_ATTACHMENT_PATH", "INDEX_DB", "INDEX_DB_IS_DEFAULT", "DEVICE", "BBT_RPC_URL", "LEGACY_INDEX_DB")
+
+
+REAL_DATA_DIR = Path(platformdirs.user_data_dir("zotgemma"))  # captured before any test redirects HOME
+
+
+@pytest.fixture(autouse=True)
+def _hermetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Nothing a test does may touch the real user data dir, HOME or the checkout's legacy index."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.setenv("ZOTGEMMA_INDEX_DB", str(tmp_path / "index.sqlite"))
+    monkeypatch.delenv("ZOTGEMMA_DEVICE", raising=False)
+    monkeypatch.delenv("ZOTGEMMA_BATCH_SIZE", raising=False)
+    monkeypatch.setattr(config, "LEGACY_INDEX_DB", tmp_path / "no-such-legacy" / "index.sqlite")
 
 
 @pytest.fixture(autouse=True)

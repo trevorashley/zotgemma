@@ -66,12 +66,16 @@ def load_matrix(conn: sqlite3.Connection) -> DenseMatrix:
     return DenseMatrix(ids, vecs)
 
 
-def library_clause(spec: str) -> tuple[str, list]:
-    """SQL condition + args for ``--library``: ``user``, a numeric group ID, or a group-name substring."""
+def library_clause(spec: str, conn: sqlite3.Connection | None = None) -> tuple[str, list]:
+    """SQL condition + args for ``--library``: ``user``, a group ID, or a group-name substring.
+
+    A numeric spec is a group ID if some indexed library has that ID (needs ``conn``; without it,
+    numeric means ID); otherwise it is matched as a name substring.
+    """
     s = spec.strip().lower()
     if s in ("user", "my", "me", "personal"):
         return "group_id IS NULL", []
-    if s.isdigit():
+    if s.isdigit() and (conn is None or conn.execute("SELECT 1 FROM items WHERE group_id = ? LIMIT 1", (int(s),)).fetchone()):
         return "group_id = ?", [int(s)]
     return "lower(library_name) LIKE ?", [f"%{s}%"]
 
@@ -87,7 +91,7 @@ def _allowed_ids(conn: sqlite3.Connection, year_from: int | None, year_to: int |
     """Item IDs passing the filters, or None if no filter is active."""
     where, args = [], []
     if library:
-        clause, largs = library_clause(library)
+        clause, largs = library_clause(library, conn)
         where.append(clause); args.extend(largs)
     if year_from is not None:
         where.append("year >= ?"); args.append(year_from)

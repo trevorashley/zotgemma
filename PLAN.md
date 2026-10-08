@@ -221,7 +221,7 @@ and no flags; the synthetic-fixture tests pass without Zotero installed.
 - Item 1: `userdata` is 130 on Zotero 10.0.5. The threshold is 125 (refuse below): the first number used by
   10.0.0 is unknown, so a low bound avoids rejecting a valid early 10.x; the functional requirement
   (`fulltext.sqlite` with FTS5) fails loudly on its own. An explicit `--zotero-dir`/`ZOTGEMMA_ZOTERO_DIR`
-  that lacks `zotero.sqlite` is a hard error rather than falling through. `useDataDir=false` in prefs is honoured.
+  that lacks `zotero.sqlite` is a hard error rather than falling through. `dataDir` is used only when `useDataDir` is true (Zotero's default is false and prefs.js omits defaults, so a bare dataDir line is stale).
   Options live on the top-level command (`zotgemma --zotero-dir X status`); `--device` is also accepted by
   `index`, `search` and `eval`.
 - Item 2: on first use the legacy `data/index.sqlite` is copied to the new location (only when the library is
@@ -243,6 +243,11 @@ and no flags; the synthetic-fixture tests pass without Zotero installed.
   3.14; for aarch64-apple-darwin it fails only because uv assumes macOS 13 and torchvision 0.29.1 ships
   `macosx_14_0_arm64` wheels. A real `uv sync --locked --python 3.11` on macOS 14+ arm64 installed and passed
   the test suite.
+- Legacy index adoption additionally requires a sample of the legacy index's item keys to exist in the current
+  `zotero.sqlite`. Tests are hermetic (autouse fixture redirects HOME, the index path and the legacy path).
+- Known limitations: `baseAttachmentPath` is read from the default profile only; feed libraries are not
+  excluded from the `status` item counts; `show` picks the lowest libraryID when a key exists in several
+  libraries; a bad `--device`/`ZOTGEMMA_DEVICE` makes `status` fail too (it is validated at startup).
 - Item 8: fixture in `tests/conftest.py`; CI-free, runs with `uv run pytest`.
 
 ---
