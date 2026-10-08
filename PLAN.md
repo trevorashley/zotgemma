@@ -333,6 +333,73 @@ cite keys and quotable passages, without you opening Zotero.
 
 ---
 
+## Phase 4: topics (the inverse problem: cluster the library into auto-collections)
+
+Goal: `zotgemma topics` groups the whole library into a two-level tree of named topics, shows how
+each topic lines up with the user's Zotero collections, and points out uncollected or possibly
+misfiled items. Like collections, but derived from the content.
+
+Experiment (2026-10-08, item vectors from Phase 1, scikit-learn, ~1 s): k-means and Ward linkage at
+k=20 both gave balanced, readable topics (root locus; safe RL; consensus; Kalman/Bayesian filtering;
+temporal logic; synthetic aperture sonar; differential geometry; geometric mechanics; convex and
+Riemannian optimization; control education; C++ design patterns; MPC; ...). Adjusted mutual
+information against the top-level collection was 0.33, which is expected: "Reviews" is a
+document-type collection and spreads over a dozen topics. Average-linkage agglomerative failed
+(one 973-item cluster plus singletons); do not use it. Abstract-less books titled from filenames
+formed junk clusters keyed on "pdf", so Phase 2 (chunk vectors) should land first.
+
+Depends on Phase 1 only; benefits from Phase 2. Independent of Phase 3.
+
+1. **Clustering core (`topics.py`).** Load all item vectors from `vec_items`. Ward linkage on the
+   unit vectors (scikit-learn `AgglomerativeClustering`, `linkage="ward"`), cut at two levels:
+   parents (~6-10) and children (~30-50). Choose each cut by silhouette score over a range rather
+   than a fixed k; `--k` and `--parents` override. Record per item: parent, child, distance to its
+   centroid and margin to the second-nearest centroid (small margin = "ambiguous"). Persist in a
+   `topics` table (topic_id, parent_id, level, name, terms, size, centroid blob) and an
+   `item_topics` table (item_id, topic_id, distance, margin) in the index DB, with a `meta` key for
+   the clustering run id. Add `scikit-learn` as a dependency.
+
+2. **Naming.** Deterministic labels first: class-based TF-IDF (1-2 grams, English stop words,
+   `max_df` 0.3) over title + abstract, top 6 terms per topic. Optional `--name-with ollama:<model>`
+   or `--name-with claude` sends the top ten titles of each topic and asks for a 2-4 word name;
+   store both, display the generated name with the terms underneath. Never block on a naming
+   backend: fall back to the terms.
+
+3. **Comparison with collections.** For each topic: the best-matching Zotero collection (by
+   overlap), its purity, and the count of items with no collection. Two reports:
+   `topics --uncollected` lists items in no collection grouped by topic (a ready-made filing list);
+   `topics --misfiled` lists items whose topic's dominant collection differs from their own, sorted
+   by centroid distance (most confident first). Both are read-only.
+
+4. **CLI and output.** `zotgemma topics` prints the tree (name, size, terms, matching collection,
+   three medoid titles). `--json` for scripting; `--items <topic>` lists a topic's members with
+   citekeys and links. `--map out.html` writes a self-contained 2-D map (PCA or UMAP if installed,
+   never a hard dependency) with one point per item, coloured by parent topic, hover showing title
+   and citekey, click opening the `zotero://select` link.
+
+5. **Stability across syncs.** `zotgemma index` assigns new items to the nearest existing
+   centroid (child, then parent) so topics stay usable between full runs. `zotgemma topics
+   --recluster` recomputes everything and matches new topics to old ones by centroid similarity
+   (Hungarian assignment) so ids and generated names carry over where the topic persisted.
+
+6. **Experiments to run and record in Benchmarks.** (a) Re-embed with EmbeddingGemma 2's
+   clustering prompt (`task: clustering | query: ...`, ~10 min) into a separate `vec_items_cluster`
+   table and compare silhouette and collection AMI against the retrieval vectors; keep whichever
+   wins. (b) After Phase 2: soft membership, an item belongs to every topic that holds at least a
+   configurable share of its chunks, so books spanning subjects appear under each.
+
+7. **Writing back to Zotero (later, opt-in).** SQLite is never written. If wanted, `topics --push`
+   creates collections through the Zotero Web API (pyzotero, needs an API key with write access)
+   under one parent collection named "Auto topics", adds items by key, and never modifies existing
+   collections. Requires explicit confirmation on every run and a dry-run listing first. Out of
+   scope until the read-only reports have been used for a while.
+
+Phase 4 exit: `zotgemma topics` produces a tree you would accept as a first draft of collections,
+the uncollected report files the items currently in no collection, and the Phase 2 chunk vectors
+have removed the filename-titled junk clusters.
+
+---
+
 ## Risks and notes
 
 - MPS bf16: works in recent torch but verify numerically on first load (step 1.5).
