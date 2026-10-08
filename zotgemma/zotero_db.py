@@ -15,13 +15,35 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import config, fulltext
-from .models import Annotation, Attachment, Item
+from .models import Annotation, Attachment, Item, Library
 
 EXCLUDED_TYPES = ("attachment", "note", "annotation")
 
 
 class ZoteroDBError(RuntimeError):
     """Raised when the Zotero database cannot be read."""
+
+
+def userdata_version(conn: sqlite3.Connection) -> int | None:
+    """The ``userdata`` schema number from the ``version`` table, or None if unavailable."""
+    try:
+        r = conn.execute("SELECT version FROM version WHERE schema = 'userdata'").fetchone()
+    except sqlite3.Error:
+        return None
+    return int(r[0]) if r else None
+
+
+def check_schema(conn: sqlite3.Connection) -> int:
+    """Refuse databases that predate Zotero 10; return the userdata version found."""
+    v = userdata_version(conn)
+    if v is None:
+        raise ZoteroDBError("Cannot read the schema version (version table, 'userdata') from zotero.sqlite; "
+                            "is this a Zotero database?")
+    if v < config.MIN_USERDATA_VERSION:
+        raise ZoteroDBError(f"zotero.sqlite has userdata schema version {v}, older than Zotero 10 "
+                            f"(needs >= {config.MIN_USERDATA_VERSION}; Zotero 10.0.5 writes 130). "
+                            "Open the library once in Zotero 10 to upgrade it.")
+    return v
 
 
 @contextmanager
@@ -46,6 +68,7 @@ def snapshot(src: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(f"file:{dst}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
+            check_schema(conn)
             yield conn
         finally:
             conn.close()
@@ -73,14 +96,44 @@ def parse_year(date: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def resolve_attachment_path(key: str, path: str | None) -> tuple[str | None, str | None]:
-    """Return (filename, absolute path) for a ``storage:<file>`` attachment path."""
+def resolve_attachment_path(key: str, path: str | None,
+                            base: Path | None = None) -> tuple[str | None, str | None]:
+    """Return (filename, absolute path) of an attachment.
+
+    ``storage:<file>`` lives in ``storage/<key>/``; ``attachments:<rel>`` is relative to Zotero's
+    ``baseAttachmentPath`` pref (``base``; the relative path is kept if unset); anything else is an
+    absolute linked-file path.
+    """
     if not path:
         return None, None
     if path.startswith("storage:"):
         name = path[len("storage:"):]
         return name, str(config.STORAGE_DIR / key / name)
+    if path.startswith("attachments:"):
+        rel = path[len("attachments:"):]
+        base = base if base is not None else config.BASE_ATTACHMENT_PATH
+        return Path(rel).name, str(base / rel) if base else rel
     return Path(path).name, path  # linked file (absolute path)
+
+
+def load_libraries(conn: sqlite3.Connection) -> dict[int, Library]:
+    """Map libraryID -> :class:`Library` for the user library and groups (feeds are skipped)."""
+    out: dict[int, Library] = {}
+    for r in conn.execute(
+            """SELECT l.libraryID, l.type, g.groupID, g.name FROM libraries l
+               LEFT JOIN groups g ON g.libraryID = l.libraryID WHERE l.type IN ('user', 'group')
+               ORDER BY l.libraryID"""):
+        out[r["libraryID"]] = Library(r["libraryID"], r["type"], r["groupID"],
+                                      r["name"] or ("My Library" if r["type"] == "user" else ""))
+    return out
+
+
+def parse_extra_citekey(extra: str | None) -> str:
+    """The value of a ``Citation Key: xyz`` line in a Zotero ``extra`` field ("" if none)."""
+    if not extra:
+        return ""
+    m = re.search(r"^[ \t]*citation[ \t]+key[ \t]*:[ \t]*(\S+)[ \t]*$", extra, re.I | re.M)
+    return m.group(1) if m else ""
 
 
 def _field_map(conn: sqlite3.Connection, names: tuple[str, ...]) -> dict[int, dict[str, str]]:
@@ -146,24 +199,38 @@ def _tags(conn: sqlite3.Connection) -> dict[int, list[str]]:
     return out
 
 
-def _pdf_attachments(conn: sqlite3.Connection) -> list[Attachment]:
-    """All non-deleted PDF attachments with linkMode in {0 imported, 1 imported URL}."""
+def _text_attachments(conn: sqlite3.Connection, libraries: dict[int, Library]) -> list[Attachment]:
+    """Non-deleted attachments worth indexing.
+
+    Selected by the presence of ``storage/<KEY>/.zotero-ft-cache`` (PDFs, HTML snapshots, EPUBs,
+    linked files whose text Zotero cached, ...). Imported PDFs (linkMode 0/1) are kept even without
+    a cache so ``status`` can report them as lacking text.
+    """
     rows = conn.execute(
-        """SELECT a.itemID, i.key, a.parentItemID, a.path FROM itemAttachments a
-           JOIN items i ON i.itemID = a.itemID
-           WHERE a.contentType = 'application/pdf' AND a.linkMode IN (0, 1)
-             AND a.itemID NOT IN (SELECT itemID FROM deletedItems)
+        """SELECT a.itemID, i.key, i.libraryID, a.parentItemID, a.path, a.contentType, a.linkMode
+           FROM itemAttachments a JOIN items i ON i.itemID = a.itemID
+           WHERE a.itemID NOT IN (SELECT itemID FROM deletedItems)
            ORDER BY a.itemID"""
     )
     out = []
     for r in rows:
+        if r["libraryID"] not in libraries:
+            continue
+        is_pdf = r["contentType"] == "application/pdf" and r["linkMode"] in (0, 1)
+        if not (is_pdf or fulltext.cache_path(r["key"]).is_file()):
+            continue
         fn, p = resolve_attachment_path(r["key"], r["path"])
-        out.append(Attachment(r["itemID"], r["key"], r["parentItemID"], fn, p))
+        out.append(Attachment(r["itemID"], r["key"], r["parentItemID"], fn, p, r["contentType"] or "",
+                              r["libraryID"]))
     return out
 
 
 def best_attachment(atts: list[Attachment]) -> Attachment | None:
-    """Pick the PDF with the largest ``.zotero-ft-cache``; ties and no-cache fall back to lowest itemID."""
+    """Pick the attachment feeding the fallback text: PDFs first, then the largest ``.zotero-ft-cache``.
+
+    Ties and no-cache fall back to the lowest itemID. Preferring PDFs keeps document strings stable
+    for libraries indexed before non-PDF attachments were supported.
+    """
     if not atts:
         return None
 
@@ -173,14 +240,15 @@ def best_attachment(atts: list[Attachment]) -> Attachment | None:
         except OSError:
             return 0
 
-    return max(atts, key=lambda a: (size(a), -a.item_id))
+    return max(atts, key=lambda a: (a.content_type == "application/pdf", size(a), -a.item_id))
 
 
 def load_items(conn: sqlite3.Connection) -> list[Item]:
-    """Load all bibliographic items plus standalone PDFs as :class:`Item` records."""
+    """Load bibliographic items from every library plus standalone text-bearing attachments as :class:`Item` records."""
+    libraries = load_libraries(conn)
     q = ",".join("?" * len(EXCLUDED_TYPES))
     rows = conn.execute(
-        f"""SELECT i.itemID, i.key, t.typeName, i.dateModified FROM items i
+        f"""SELECT i.itemID, i.key, i.libraryID, t.typeName, i.dateModified FROM items i
             JOIN itemTypes t ON t.itemTypeID = i.itemTypeID
             WHERE t.typeName NOT IN ({q})
               AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
@@ -188,17 +256,23 @@ def load_items(conn: sqlite3.Connection) -> list[Item]:
         EXCLUDED_TYPES,
     ).fetchall()
     fields = _field_map(conn, ("title", "abstractNote", "date", "publicationTitle", "proceedingsTitle",
-                               "bookTitle", "publisher", "repository", "websiteTitle", "DOI", "url"))
+                               "bookTitle", "publisher", "repository", "websiteTitle", "DOI", "url", "extra"))
     creators, tags, colls = _creators(conn), _tags(conn), _collection_paths(conn)
-    pdfs = _pdf_attachments(conn)
+    pdfs = _text_attachments(conn, libraries)
 
     by_parent: dict[int, list[Attachment]] = {}
     for a in pdfs:
         if a.parent_item_id is not None:
             by_parent.setdefault(a.parent_item_id, []).append(a)
 
+    def lib_fields(library_id: int) -> dict:
+        lib = libraries[library_id]
+        return {"library_id": library_id, "group_id": lib.group_id, "library_name": lib.name}
+
     items: list[Item] = []
     for r in rows:
+        if r["libraryID"] not in libraries:
+            continue
         f = fields.get(r["itemID"], {})
         venue = (f.get("publicationTitle") or f.get("proceedingsTitle") or f.get("bookTitle")
                  or f.get("repository") or f.get("websiteTitle") or f.get("publisher") or "")
@@ -209,10 +283,11 @@ def load_items(conn: sqlite3.Connection) -> list[Item]:
             doi=f.get("DOI", ""), url=f.get("url", ""), date_modified=r["dateModified"],
             tags=sorted(tags.get(r["itemID"], [])), collections=sorted(colls.get(r["itemID"], [])),
             attachment=best_attachment(by_parent.get(r["itemID"], [])),
-            attachments=by_parent.get(r["itemID"], []),
+            attachments=by_parent.get(r["itemID"], []), extra_citekey=parse_extra_citekey(f.get("extra")),
+            **lib_fields(r["libraryID"]),
         ))
 
-    # Standalone PDFs (no parent) become their own items, titled from the filename.
+    # Standalone attachments (no parent) become their own items, titled from the filename.
     dates = {r["itemID"]: r["dateModified"] for r in conn.execute("SELECT itemID, dateModified FROM items")}
     for a in pdfs:
         if a.parent_item_id is not None:
@@ -224,6 +299,7 @@ def load_items(conn: sqlite3.Connection) -> list[Item]:
             authors=creators.get(a.item_id, ""), venue="", abstract="", doi="", url=f.get("url", ""),
             date_modified=dates.get(a.item_id, ""), tags=sorted(tags.get(a.item_id, [])),
             collections=sorted(colls.get(a.item_id, [])), attachment=a, attachments=[a], standalone=True,
+            extra_citekey=parse_extra_citekey(f.get("extra")), **lib_fields(a.library_id),
         ))
     return items
 
@@ -242,6 +318,15 @@ def load_annotations(conn: sqlite3.Connection, attachment_ids: list[int]) -> lis
     return [Annotation(r["itemID"], r["pageLabel"], r["text"] or "", r["comment"] or "") for r in rows]
 
 
+def attachment_type_counts(attachments: list[Attachment]) -> dict[str, int]:
+    """Count attachments that have a text cache, by content type (most common first)."""
+    counts: dict[str, int] = {}
+    for a in attachments:
+        if fulltext.cache_path(a.key).is_file():
+            counts[a.content_type or "unknown"] = counts.get(a.content_type or "unknown", 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def library_counts(conn: sqlite3.Connection) -> dict[str, int]:
     """Headline counts for ``zotgemma status``."""
     one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
@@ -250,8 +335,7 @@ def library_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "bibliographic_items": one(
             f"""SELECT count(*) FROM items i JOIN itemTypes t USING(itemTypeID)
                 WHERE t.typeName NOT IN ('attachment','note','annotation') AND i.{live}"""),
-        "pdf_attachments": one(
-            f"SELECT count(*) FROM itemAttachments WHERE contentType='application/pdf' AND {live}"),
+        "attachments": one(f"SELECT count(*) FROM itemAttachments WHERE {live}"),
         "annotations": one(f"SELECT count(*) FROM itemAnnotations WHERE {live}"),
         "collections": one("SELECT count(*) FROM collections"),
         "tags": one("SELECT count(*) FROM tags"),

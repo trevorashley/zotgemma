@@ -66,10 +66,29 @@ def load_matrix(conn: sqlite3.Connection) -> DenseMatrix:
     return DenseMatrix(ids, vecs)
 
 
+def library_clause(spec: str) -> tuple[str, list]:
+    """SQL condition + args for ``--library``: ``user``, a numeric group ID, or a group-name substring."""
+    s = spec.strip().lower()
+    if s in ("user", "my", "me", "personal"):
+        return "group_id IS NULL", []
+    if s.isdigit():
+        return "group_id = ?", [int(s)]
+    return "lower(library_name) LIKE ?", [f"%{s}%"]
+
+
+def list_libraries(conn: sqlite3.Connection) -> list[tuple[int | None, str, int]]:
+    """``(group_id or None, name, item_count)`` for each library present in the index."""
+    return [(r[0], r[1], r[2]) for r in conn.execute(
+        "SELECT group_id, library_name, count(*) FROM items GROUP BY library_id ORDER BY library_id")]
+
+
 def _allowed_ids(conn: sqlite3.Connection, year_from: int | None, year_to: int | None,
-                 item_type: str | None, collection: str | None) -> set[int] | None:
+                 item_type: str | None, collection: str | None, library: str | None = None) -> set[int] | None:
     """Item IDs passing the filters, or None if no filter is active."""
     where, args = [], []
+    if library:
+        clause, largs = library_clause(library)
+        where.append(clause); args.extend(largs)
     if year_from is not None:
         where.append("year >= ?"); args.append(year_from)
     if year_to is not None:
@@ -133,7 +152,7 @@ def fulltext_ranking(conn: sqlite3.Connection, query: str, depth: int) -> list[i
 
 def search(conn: sqlite3.Connection, query: str, limit: int = 10, mode: str = "hybrid",
            year_from: int | None = None, year_to: int | None = None, item_type: str | None = None,
-           collection: str | None = None, dim: int = config.EMBED_DIM,
+           collection: str | None = None, library: str | None = None, dim: int = config.EMBED_DIM,
            matrix: DenseMatrix | None = None, qvec: np.ndarray | None = None) -> list[Hit]:
     """Search the library.
 
@@ -145,7 +164,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10, mode: str = "h
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     if not query.strip():
         return []
-    allowed = _allowed_ids(conn, year_from, year_to, item_type, collection)
+    allowed = _allowed_ids(conn, year_from, year_to, item_type, collection, library)
     depth = config.CANDIDATE_DEPTH if allowed is None else 10_000
 
     def keep(ids: list[int]) -> list[int]:
@@ -187,10 +206,12 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 10, mode: str = "h
 def _hydrate(conn: sqlite3.Connection, fused: list[tuple[int, float, dict[str, int]]]) -> list[Hit]:
     hits: list[Hit] = []
     for i, score, ranks in fused:
-        r = conn.execute("SELECT key, citekey, title, authors, year, item_type, venue FROM items WHERE item_id = ?", (i,)).fetchone()
+        r = conn.execute("SELECT key, citekey, title, authors, year, item_type, venue, library_id, group_id, library_name "
+            "FROM items WHERE item_id = ?", (i,)).fetchone()
         if r is None:
             continue
-        hits.append(Hit(i, r["key"], r["citekey"], r["title"], r["authors"], r["year"], r["item_type"], r["venue"], score, ranks))
+        hits.append(Hit(i, r["key"], r["citekey"], r["title"], r["authors"], r["year"], r["item_type"], r["venue"], score, ranks,
+                        r["library_id"], r["group_id"], r["library_name"]))
     return hits
 
 

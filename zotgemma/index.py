@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import re
+import shutil
 import sqlite3
 import time
 from collections.abc import Callable
@@ -16,12 +19,16 @@ from . import config, citekeys, fulltext, zotero_db
 from .embedder import build_document, get_embedder
 from .models import Item
 
+log = logging.getLogger(__name__)
+
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS items (
-    item_id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, citekey TEXT, item_type TEXT, title TEXT,
+    item_id INTEGER PRIMARY KEY, key TEXT NOT NULL, library_id INTEGER NOT NULL DEFAULT 1, group_id INTEGER,
+    library_name TEXT NOT NULL DEFAULT '', citekey TEXT, item_type TEXT, title TEXT,
     year INTEGER, authors TEXT, venue TEXT, abstract TEXT, doi TEXT, url TEXT, tags TEXT, collections TEXT,
     date_modified TEXT, fulltext_mtime REAL, doc_text_hash TEXT, attachment_id INTEGER,
-    attachment_key TEXT, attachment_path TEXT, standalone INTEGER DEFAULT 0
+    attachment_key TEXT, attachment_path TEXT, standalone INTEGER DEFAULT 0,
+    UNIQUE (library_id, key)
 );
 CREATE INDEX IF NOT EXISTS items_citekey ON items(citekey);
 CREATE INDEX IF NOT EXISTS items_attachment ON items(attachment_id);
@@ -30,7 +37,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     item_id INTEGER PRIMARY KEY, embedding float[{config.EMBED_DIM}] distance_metric=cosine);
 CREATE TABLE IF NOT EXISTS attachments (
     attachment_id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, key TEXT NOT NULL, path TEXT,
-    has_text INTEGER NOT NULL DEFAULT 0, text_bytes INTEGER NOT NULL DEFAULT 0, is_best INTEGER NOT NULL DEFAULT 0
+    has_text INTEGER NOT NULL DEFAULT 0, text_bytes INTEGER NOT NULL DEFAULT 0, is_best INTEGER NOT NULL DEFAULT 0,
+    library_id INTEGER NOT NULL DEFAULT 1, content_type TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS attachments_item ON attachments(item_id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
@@ -39,18 +47,64 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 TAG_SEP = "\n"
 
 
+def migrate_legacy_index(dest: Path | None = None) -> Path | None:
+    """Copy a pre-Phase-1.5 ``data/index.sqlite`` to the platformdirs location, once.
+
+    Only when ``dest`` is the default location, does not exist yet, and the library is the one the
+    old code would have used (``ZOTGEMMA_ZOTERO_DIR`` or ``~/Zotero``), so a 10-minute embedding run is
+    not repeated. The legacy file is left in place. Returns the legacy path if it was copied.
+    """
+    dest = dest or config.INDEX_DB
+    legacy = config.LEGACY_INDEX_DB
+    if not config.INDEX_DB_IS_DEFAULT or dest.exists() or not legacy.is_file():
+        return None
+    old_dir = Path(os.environ.get("ZOTGEMMA_ZOTERO_DIR") or Path.home() / "Zotero").expanduser()
+    if old_dir.resolve() != config.ZOTERO_DIR.resolve():
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy, dest)
+    log.warning("copied existing index %s -> %s (the old file can be deleted)", legacy, dest)
+    return legacy
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Upgrade an index built before Phase 1.5 in place (no re-embedding; vectors are keyed by item_id)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
+    if cols and "library_id" not in cols:
+        conn.executescript("""
+            DROP INDEX IF EXISTS items_citekey; DROP INDEX IF EXISTS items_attachment;
+            ALTER TABLE items RENAME TO items_old;""")
+        conn.executescript(SCHEMA)
+        shared = ", ".join(sorted(cols & {r[1] for r in conn.execute("PRAGMA table_info(items)")}))
+        conn.executescript(f"INSERT INTO items ({shared}) SELECT {shared} FROM items_old; DROP TABLE items_old;")
+    acols = {r[1] for r in conn.execute("PRAGMA table_info(attachments)")}
+    if acols and "library_id" not in acols:
+        conn.execute("ALTER TABLE attachments ADD COLUMN library_id INTEGER NOT NULL DEFAULT 1")
+    if acols and "content_type" not in acols:
+        conn.execute("ALTER TABLE attachments ADD COLUMN content_type TEXT NOT NULL DEFAULT ''")
+
+
 def open_index(path: Path | None = None, create: bool = False) -> sqlite3.Connection:
     """Open the index DB with sqlite-vec loaded. Raises FileNotFoundError if absent and not ``create``."""
-    path = path or config.INDEX_DB
+    if path is None:
+        path = config.INDEX_DB
+        migrate_legacy_index(path)
     if not path.exists():
         if not create:
             raise FileNotFoundError(f"No index at {path}. Run `zotgemma index` first.")
         path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.enable_load_extension(True)
+    try:
+        conn.enable_load_extension(True)
+    except AttributeError:
+        conn.close()
+        raise RuntimeError(
+            "This Python's sqlite3 cannot load extensions (sqlite-vec needs that). The macOS system Python "
+            "lacks it; use a uv-managed or Homebrew Python, e.g. `uv tool install --python 3.12 ...`.") from None
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
+    _migrate_schema(conn)
     conn.executescript(SCHEMA)  # idempotent; adds tables introduced after the index was built
     return conn
 
@@ -159,6 +213,7 @@ class SyncStats:
     seconds: float = 0.0
     citekey_source: str = ""
     citekeys_found: int = 0
+    citekeys_from_extra: int = 0
     dtype: str = ""
     device: str = ""
 
@@ -260,18 +315,19 @@ def _upsert_items(conn: sqlite3.Connection, items: list[Item], existing: dict, h
         a = it.attachment
         h = None if it.item_id in hash_override_ids else hashes.get(it.item_id)
         conn.execute(
-            """INSERT INTO items (item_id, key, item_type, title, year, authors, venue, abstract, doi, url, tags,
+            """INSERT INTO items (item_id, key, library_id, group_id, library_name, item_type, title, year, authors, venue, abstract, doi, url, tags,
                                   collections, date_modified, fulltext_mtime, doc_text_hash, attachment_id,
                                   attachment_key, attachment_path, standalone)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(item_id) DO UPDATE SET key=excluded.key, item_type=excluded.item_type,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(item_id) DO UPDATE SET key=excluded.key, library_id=excluded.library_id,
+                 group_id=excluded.group_id, library_name=excluded.library_name, item_type=excluded.item_type,
                  title=excluded.title, year=excluded.year, authors=excluded.authors, venue=excluded.venue,
                  abstract=excluded.abstract, doi=excluded.doi, url=excluded.url, tags=excluded.tags,
                  collections=excluded.collections, date_modified=excluded.date_modified,
                  fulltext_mtime=excluded.fulltext_mtime, doc_text_hash=excluded.doc_text_hash,
                  attachment_id=excluded.attachment_id, attachment_key=excluded.attachment_key,
                  attachment_path=excluded.attachment_path, standalone=excluded.standalone""",
-            (it.item_id, it.key, it.item_type, it.title, it.year, it.authors, it.venue, it.abstract, it.doi, it.url,
+            (it.item_id, it.key, it.library_id, it.group_id, it.library_name, it.item_type, it.title, it.year, it.authors, it.venue, it.abstract, it.doi, it.url,
              TAG_SEP.join(it.tags), TAG_SEP.join(it.collections), it.date_modified, mtimes.get(it.item_id, 0.0), h,
              a.item_id if a else None, a.key if a else None, a.path if a else None, int(it.standalone)),
         )
@@ -279,7 +335,7 @@ def _upsert_items(conn: sqlite3.Connection, items: list[Item], existing: dict, h
 
 
 def _sync_attachments(conn: sqlite3.Connection, items: list[Item]) -> None:
-    """Rebuild the ``attachments`` table: every non-deleted PDF of every item."""
+    """Rebuild the ``attachments`` table: every non-deleted PDF or text-cached attachment of every item."""
     conn.execute("DELETE FROM attachments")
     for it in items:
         for a in it.attachments:
@@ -287,22 +343,31 @@ def _sync_attachments(conn: sqlite3.Connection, items: list[Item]) -> None:
                 size = fulltext.cache_path(a.key).stat().st_size
             except OSError:
                 size = 0
-            conn.execute("INSERT OR REPLACE INTO attachments VALUES (?,?,?,?,?,?,?)",
+            conn.execute("""INSERT OR REPLACE INTO attachments
+                            (attachment_id, item_id, key, path, has_text, text_bytes, is_best, library_id, content_type)
+                            VALUES (?,?,?,?,?,?,?,?,?)""",
                          (a.item_id, it.item_id, a.key, a.path, int(size > 0), size,
-                          int(it.attachment is not None and it.attachment.item_id == a.item_id)))
+                          int(it.attachment is not None and it.attachment.item_id == a.item_id),
+                          a.library_id, a.content_type))
 
 
 def _refresh_citekeys(conn: sqlite3.Connection, items: list[Item], stats: SyncStats) -> None:
-    """Update ``items.citekey``; keep cached values for keys the source cannot supply."""
-    try:
-        mapping, source = citekeys.get_citekeys([i.key for i in items])
-    except citekeys.CitekeyError as e:
-        mapping, source = {}, f"unavailable ({e})"
+    """Update ``items.citekey``.
+
+    Live Better BibTeX keys win. Items BBT has no key for fall back to a ``Citation Key:`` line in ``extra``.
+    When Zotero is not running, cached keys are kept and ``extra`` only fills rows that have none.
+    """
+    mapping, source = citekeys.get_citekeys([(i.library_id, i.key) for i in items])
     stats.citekey_source = source
-    # Live BBT keys overwrite; the stale migrated snapshot only fills rows that have no key yet.
-    where = "" if source == "bbt" else " AND citekey IS NULL"
-    for key, ck in mapping.items():
-        conn.execute(f"UPDATE items SET citekey = ? WHERE key = ?{where}", (ck, key))
+    live = source == "bbt"
+    for (lib, key), ck in mapping.items():
+        conn.execute("UPDATE items SET citekey = ? WHERE library_id = ? AND key = ?", (ck, lib, key))
+    where = "" if live else " AND citekey IS NULL"
+    for it in items:
+        if it.extra_citekey and (it.library_id, it.key) not in mapping:
+            cur = conn.execute(f"UPDATE items SET citekey = ? WHERE library_id = ? AND key = ?{where}",
+                               (it.extra_citekey, it.library_id, it.key))
+            stats.citekeys_from_extra += cur.rowcount
     stats.citekeys_found = conn.execute("SELECT count(*) FROM items WHERE citekey IS NOT NULL").fetchone()[0]
 
 
