@@ -38,14 +38,15 @@ The earlier `~/projects/zotero` (pyzotero + Ollama keyword experiment, conda py3
 ~/projects/zotgemma/
   pyproject.toml            uv project; console scripts: zotgemma, zotgemma-mcp
   PLAN.md
-  data/index.sqlite         our index (gitignored); never writes to ~/Zotero
+  (index)                   <platformdirs user data>/zotgemma/<name>-<hash>/index.sqlite; never writes to the Zotero dir
   zotgemma/
-    config.py               ZOTERO_DIR, INDEX_DB, MODEL_ID, EMBED_DIM, paths
+    config.py               configure(): resolved paths, device, batch size; MODEL_ID, EMBED_DIM
+    discovery.py            Zotero data-dir discovery (flag, env, profiles.ini/prefs.js, ~/Zotero)
     zotero_db.py            read-only snapshot of zotero.sqlite -> dataclasses
                             (items, creators, fields, tags, collections,
                              attachments, annotations, deletedItems)
     fulltext.py             .zotero-ft-cache loader; BM25 query on fulltext.sqlite
-    citekeys.py             BBT JSON-RPC with .migrated fallback, cached in index
+    citekeys.py             BBT JSON-RPC (libraryID:key), cached in index
     embedder.py             EmbeddingGemma 2 wrapper: lazy load, MPS, bf16/fp32,
                             query vs document formatting, truncate_dim, batching
     index.py                schema, upsert, incremental sync, deletion
@@ -214,6 +215,35 @@ CUDA or macOS with Metal. Windows and Zotero 6/7 are out of scope.
 
 Phase 1.5 exit: a clean clone on a second machine indexes its own library with `zotgemma index`
 and no flags; the synthetic-fixture tests pass without Zotero installed.
+
+**Status: implemented 2026-10-08.** Notes and deviations:
+
+- Item 1: `userdata` is 130 on Zotero 10.0.5. The threshold is 125 (refuse below): the first number used by
+  10.0.0 is unknown, so a low bound avoids rejecting a valid early 10.x; the functional requirement
+  (`fulltext.sqlite` with FTS5) fails loudly on its own. An explicit `--zotero-dir`/`ZOTGEMMA_ZOTERO_DIR`
+  that lacks `zotero.sqlite` is a hard error rather than falling through. `useDataDir=false` in prefs is honoured.
+  Options live on the top-level command (`zotgemma --zotero-dir X status`); `--device` is also accepted by
+  `index`, `search` and `eval`.
+- Item 2: on first use the legacy `data/index.sqlite` is copied to the new location (only when the library is
+  the one the old code would have used, `ZOTGEMMA_ZOTERO_DIR` or `~/Zotero`); the old file is left in place.
+  The index schema is migrated in place (`items` rebuilt with `library_id`, `group_id`, `library_name` and
+  `UNIQUE(library_id, key)`; `attachments` gains `library_id`, `content_type`) without touching vectors.
+- Item 3: BBT `item.citationkey` takes `[libraryID]:[itemKey]` (checked in the BBT source and live:
+  `JKLLQ43U` and `1:JKLLQ43U` both return the key, `2:JKLLQ43U` returns null). The number is the Zotero
+  libraryID, not the groupID; a bare key means the user library only. zotgemma always sends `libraryID:key`.
+  Group handling is covered by the synthetic fixture only; this library has no groups. `--library` accepts
+  `user`, a groupID or a group-name substring.
+- Item 4: attachments are kept if they have a `.zotero-ft-cache`, or are imported PDFs (so missing text is
+  still reported). The "best" attachment prefers PDFs, then the largest cache, so existing document strings
+  did not change. On this library the first sync after the change re-embedded 5 abstract-less items whose
+  only attachment is an HTML snapshot (6 s); the following run embedded 0 in 0.4 s.
+- Item 5: `better-bibtex.migrated` support removed. Offline sync keeps cached keys; `Citation Key:` from
+  Extra fills rows with none (offline) or items BBT returns nothing for (online).
+- Item 7: lock resolves universally for 3.11 to 3.14. `uv pip compile` succeeds for linux x86_64 on 3.11 and
+  3.14; for aarch64-apple-darwin it fails only because uv assumes macOS 13 and torchvision 0.29.1 ships
+  `macosx_14_0_arm64` wheels. A real `uv sync --locked --python 3.11` on macOS 14+ arm64 installed and passed
+  the test suite.
+- Item 8: fixture in `tests/conftest.py`; CI-free, runs with `uv run pytest`.
 
 ---
 
