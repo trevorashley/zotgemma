@@ -44,7 +44,7 @@ def open_index(path: Path | None = None, create: bool = False) -> sqlite3.Connec
     path = path or config.INDEX_DB
     if not path.exists():
         if not create:
-            raise FileNotFoundError(f"No index at {path}. Run `zsearch index` first.")
+            raise FileNotFoundError(f"No index at {path}. Run `zotgemma index` first.")
         path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row

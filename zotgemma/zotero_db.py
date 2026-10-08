@@ -34,7 +34,7 @@ def snapshot(src: Path | None = None) -> Iterator[sqlite3.Connection]:
     src = src or config.ZOTERO_SQLITE
     if not src.exists():
         raise ZoteroDBError(f"Zotero database not found at {src}. Is the Zotero data directory {config.ZOTERO_DIR} correct?")
-    with tempfile.TemporaryDirectory(prefix="zsearch-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="zotgemma-") as tmp:
         dst = Path(tmp) / "zotero.sqlite"
         try:
             shutil.copy2(src, dst)
@@ -243,7 +243,7 @@ def load_annotations(conn: sqlite3.Connection, attachment_ids: list[int]) -> lis
 
 
 def library_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    """Headline counts for ``zsearch status``."""
+    """Headline counts for ``zotgemma status``."""
     one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
     live = "itemID NOT IN (SELECT itemID FROM deletedItems)"
     return {

@@ -1,6 +1,6 @@
-# zotero-search: semantic + keyword search over the local Zotero library
+# zotgemma: semantic + keyword search over the local Zotero library
 
-Status: plan (2026-10-07). Project lives in `~/projects/zotero-search`.
+Status: plan (2026-10-07). Project lives in `~/projects/zotgemma`.
 The earlier `~/projects/zotero` (pyzotero + Ollama keyword experiment, conda py3.10) is left untouched.
 
 ## Facts the design rests on (verified 2026-10-07)
@@ -35,11 +35,11 @@ The earlier `~/projects/zotero` (pyzotero + Ollama keyword experiment, conda py3
 ## Architecture
 
 ```
-~/projects/zotero-search/
-  pyproject.toml            uv project; console scripts: zsearch, zsearch-mcp
+~/projects/zotgemma/
+  pyproject.toml            uv project; console scripts: zotgemma, zotgemma-mcp
   PLAN.md
   data/index.sqlite         our index (gitignored); never writes to ~/Zotero
-  zsearch/
+  zotgemma/
     config.py               ZOTERO_DIR, INDEX_DB, MODEL_ID, EMBED_DIM, paths
     zotero_db.py            read-only snapshot of zotero.sqlite -> dataclasses
                             (items, creators, fields, tags, collections,
@@ -52,10 +52,10 @@ The earlier `~/projects/zotero` (pyzotero + Ollama keyword experiment, conda py3
     chunker.py              (phase 2) paragraph-aware token chunking
     search.py               dense + BM25 + reciprocal rank fusion, filters,
                             chunk->item rollup
-    cli.py                  zsearch index|search|show|status|eval
+    cli.py                  zotgemma index|search|show|status|eval
     mcp_server.py           (phase 3) stdio MCP server exposing search.py
   tests/
-    golden.yaml             query -> expected item keys, for `zsearch eval`
+    golden.yaml             query -> expected item keys, for `zotgemma eval`
 ```
 
 Index DB schema (SQLite + sqlite-vec):
@@ -76,7 +76,7 @@ Design rules:
 - Nothing ever writes to `~/Zotero`. Snapshot `zotero.sqlite` to a temp copy on
   each sync (cheap, avoids WAL/lock edge cases).
 - Dense vectors stored at full 768-d, normalized. Truncation to 256/512 is a
-  query-time experiment via `zsearch eval`, not a schema decision.
+  query-time experiment via `zotgemma eval`, not a schema decision.
 - Hybrid by default: reciprocal rank fusion (k=60) over dense and BM25 lists.
   Pure modes stay available for debugging (`--mode dense|keyword|hybrid`).
 - Hybrid fusion is two-stage: the metadata-BM25 and Zotero full-text-BM25 lists are RRF-fused into one
@@ -96,7 +96,7 @@ Goal: "which papers in my library are about X" in under a second, from the shell
 1. **Scaffold.** `uv init --package`, Python 3.14, deps: torch, sentence-transformers,
    sqlite-vec, numpy, typer, rich, httpx (BBT RPC), pyyaml. `.gitignore` data/ and
    the HF cache. `git init`.
-   Check: `uv run zsearch --help` works.
+   Check: `uv run zotgemma --help` works.
 
 2. **zotero_db.py.** Snapshot copy + queries:
    - bibliographic items (exclude attachment/note/annotation types, exclude
@@ -107,13 +107,13 @@ Goal: "which papers in my library are about X" in under a second, from the shell
    - best PDF attachment per item (parentItemID, contentType = application/pdf,
      linkMode in {0,1}; path `storage:<file>` -> `~/Zotero/storage/<KEY>/<file>`);
    - the 47 standalone PDFs (no parent) as their own items, titled from filename.
-   Check: `zsearch status` prints counts matching the numbers above.
+   Check: `zotgemma status` prints counts matching the numbers above.
 
 3. **fulltext.py.** `load_text(attachment_key)` reads `.zotero-ft-cache`;
    `bm25(query, limit)` runs `MATCH` against `fulltext.sqlite` (immutable) and maps
    rowid -> attachment -> parent item. Sanitize the query for FTS5 syntax (quote
    terms, strip operators) so natural-language queries do not error.
-   Check: `zsearch search --mode keyword "lyapunov"` returns ranked items.
+   Check: `zotgemma search --mode keyword "lyapunov"` returns ranked items.
 
 4. **citekeys.py.** Batch `item.citationkey` over all item keys via JSON-RPC;
    if Zotero is not running, fall back to `better-bibtex.migrated`; cache in
@@ -134,21 +134,21 @@ Goal: "which papers in my library are about X" in under a second, from the shell
 7. **index.py.** Create schema; `sync()` = snapshot -> diff by (dateModified,
    fulltext mtime, doc_text_hash) -> embed changed -> upsert -> delete items no
    longer present. Also populate `item_fts`.
-   Check: second `zsearch index` run embeds 0 items and finishes in seconds.
+   Check: second `zotgemma index` run embeds 0 items and finishes in seconds.
 
 8. **search.py.** `search(query, limit=10, mode='hybrid', year_from/to=None,
    item_type=None, collection=None)`. Dense: top-100 from vec_items. Keyword:
    top-100 from `item_fts` BM25 plus Zotero full-text BM25 rolled to items. Fuse
    with RRF, apply filters, return top-k with per-source ranks for transparency.
 
-9. **cli.py.** `zsearch index`, `zsearch search "query" [--mode] [--limit]
-   [--year 2018:] [--type journalArticle] [--json]`, `zsearch show <citekey|key>`
+9. **cli.py.** `zotgemma index`, `zotgemma search "query" [--mode] [--limit]
+   [--year 2018:] [--type journalArticle] [--json]`, `zotgemma show <citekey|key>`
    (metadata, abstract, collections, tags, attachment path, annotations),
-   `zsearch status`, `zsearch eval`.
+   `zotgemma status`, `zotgemma eval`.
    Output: rich table; `--json` for scripting; each row has the zotero:// link.
 
 10. **eval.** Write `tests/golden.yaml` with 15–20 queries you know the answers
-    to (concept-level, author-name, acronym, equation-name). `zsearch eval`
+    to (concept-level, author-name, acronym, equation-name). `zotgemma eval`
     reports recall@5 / recall@10 for dense, keyword, hybrid, and for
     truncate_dim in {768, 512, 256}. This decides the defaults, not guesswork.
 
@@ -159,7 +159,7 @@ alone, incremental sync works, and you use it for a week. (Done 2026-10-07.)
 
 ## Phase 1.5: run on any machine, against any Zotero library
 
-Goal: `uv tool install` on a second computer, run `zsearch index`, and it finds and indexes that
+Goal: `uv tool install` on a second computer, run `zotgemma index`, and it finds and indexes that
 machine's Zotero library with no configuration.
 
 Assumptions (agreed 2026-10-08): Zotero 10 or newer (so `fulltext.sqlite` with FTS5 exists);
@@ -167,16 +167,16 @@ Better BibTeX installed; `google/embeddinggemma-2` already in the Hugging Face c
 CUDA or macOS with Metal. Windows and Zotero 6/7 are out of scope.
 
 1. **Library discovery.** Resolve the data directory in this order: `--zotero-dir` flag,
-   `ZSEARCH_ZOTERO_DIR`, then Zotero's own preference `extensions.zotero.dataDir` read from
+   `ZOTGEMMA_ZOTERO_DIR`, then Zotero's own preference `extensions.zotero.dataDir` read from
    `prefs.js` of the default profile (`~/Library/Application Support/Zotero/profiles.ini` on
    macOS, `~/.zotero/zotero/profiles.ini` on Linux), then `~/Zotero`. Fail with a message naming
    each place looked. Refuse data dirs whose `zotero.sqlite` schema version predates Zotero 10
    (check `version` table, `userdata`), naming the version found.
 
 2. **Index location.** Store the index under the user's data dir via `platformdirs`
-   (`~/Library/Application Support/zsearch/` or `~/.local/share/zsearch/`), one subdirectory per
+   (`~/Library/Application Support/zotgemma/` or `~/.local/share/zotgemma/`), one subdirectory per
    library keyed by a hash of the data-dir path, so one install serves several libraries.
-   `--index` / `ZSEARCH_INDEX_DB` still override. `zsearch status` prints both paths.
+   `--index` / `ZOTGEMMA_INDEX_DB` still override. `zotgemma status` prints both paths.
 
 3. **Group libraries.** Load items from every library in `libraries`, carry `library_id` in
    `items` and `attachments`, make `(library_id, key)` the unique key, and build links as
@@ -196,8 +196,8 @@ CUDA or macOS with Metal. Windows and Zotero 6/7 are out of scope.
    field (BBT writes it there for pinned keys).
 
 6. **Device and batch size.** Keep the existing MPS/CUDA/CPU selection and bf16 check. Add
-   `--device` and `ZSEARCH_DEVICE` overrides, and pick the embedding batch size by device
-   (16 on MPS, 64 on CUDA, 8 on CPU) with `ZSEARCH_BATCH_SIZE` to override. Honour `HF_HOME`
+   `--device` and `ZOTGEMMA_DEVICE` overrides, and pick the embedding batch size by device
+   (16 on MPS, 64 on CUDA, 8 on CPU) with `ZOTGEMMA_BATCH_SIZE` to override. Honour `HF_HOME`
    and `HF_HUB_OFFLINE`; the model is loaded with `local_files_only=True` first, as now.
 
 7. **Packaging.** Relax `requires-python` to `>=3.11` and confirm the lock resolves on 3.11 to
@@ -209,10 +209,10 @@ CUDA or macOS with Metal. Windows and Zotero 6/7 are out of scope.
    `zotero.sqlite` with the handful of tables we read, two items, one group item, one PDF and one
    HTML attachment with text caches, a `fulltext.sqlite` with one FTS5 row) and run
    `load_items`, `sync` with a stubbed embedder, and `search --mode keyword` against it in CI.
-   Make the golden set optional: `zsearch eval --golden PATH`, with `tests/golden.yaml` kept as
+   Make the golden set optional: `zotgemma eval --golden PATH`, with `tests/golden.yaml` kept as
    the example for this library.
 
-Phase 1.5 exit: a clean clone on a second machine indexes its own library with `zsearch index`
+Phase 1.5 exit: a clean clone on a second machine indexes its own library with `zotgemma index`
 and no flags; the synthetic-fixture tests pass without Zotero installed.
 
 ---
@@ -230,7 +230,7 @@ to items.
    linked to the parent item, with pageLabel kept for display.
 
 2. **Throughput and scheduling.** From the phase-1 benchmark, estimate total
-   time (likely several hours on M1). `zsearch index --chunks` must be resumable
+   time (likely several hours on M1). `zotgemma index --chunks` must be resumable
    (commit per attachment, skip already-done attachments by fulltext mtime) and
    safe to Ctrl-C. Order: items by dateAdded desc, so recent papers are
    searchable first. Optional `--max-chunks-per-item N` to cap long books on the
@@ -245,8 +245,8 @@ to items.
    Annotation chunks get a configurable boost (they are text you already judged
    important).
 
-5. **CLI.** `zsearch passages "query"`, `zsearch search --with-passages` (shows
-   best snippet under each item), `zsearch show <key> --text [--grep term]`.
+5. **CLI.** `zotgemma passages "query"`, `zotgemma search --with-passages` (shows
+   best snippet under each item), `zotgemma show <key> --text [--grep term]`.
 
 6. **Eval.** Extend golden.yaml with passage-level queries. Compare chunk sizes
    (500 / 700 / 1000) and the rollup weighting on recall@10.
@@ -279,11 +279,11 @@ read passages, and cite with Better BibTeX keys.
 
 2. **Process model.** Embedder loads lazily on first dense call (a few seconds);
    process stays alive for the session. Keyword-only tools answer instantly. No
-   indexing from MCP; `zsearch index` stays a CLI/cron job (launchd every night,
+   indexing from MCP; `zotgemma index` stays a CLI/cron job (launchd every night,
    or on demand).
 
 3. **Registration.**
-   `claude mcp add --scope user zotero -- uv run --directory ~/projects/zotero-search zsearch-mcp`
+   `claude mcp add --scope user zotero -- uv run --directory ~/projects/zotgemma zotgemma-mcp`
    Then test from a Claude Code session: "find papers in my library about
    passivity-based control" and "what does Brockett say about nonholonomic
    stabilization" (passage-level).
@@ -304,7 +304,7 @@ cite keys and quotable passages, without you opening Zotero.
 - First run downloads the full model (~1.5 GB incl. vision/audio encoders) to the
   HF cache; text-only selective loading is a nice-to-have, not a blocker.
 - Zotero's FTS has indexed 1,328 of 1,364 text caches; a handful of PDFs have no
-  extracted text (scans). OCR is out of scope; `zsearch status` should list them.
+  extracted text (scans). OCR is out of scope; `zotgemma status` should list them.
 - `~/projects/zotero/test.py` contains a Zotero Web API key in plain text.
   Rotate it at zotero.org/settings/keys; this project never needs the web API.
 

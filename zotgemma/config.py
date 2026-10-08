@@ -5,16 +5,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Overridable via ZSEARCH_ZOTERO_DIR, ZSEARCH_BBT_URL, ZSEARCH_INDEX_DB.
-ZOTERO_DIR = Path(os.environ.get("ZSEARCH_ZOTERO_DIR", Path.home() / "Zotero")).expanduser()
+# Overridable via ZOTGEMMA_ZOTERO_DIR, ZOTGEMMA_BBT_URL, ZOTGEMMA_INDEX_DB.
+ZOTERO_DIR = Path(os.environ.get("ZOTGEMMA_ZOTERO_DIR", Path.home() / "Zotero")).expanduser()
 ZOTERO_SQLITE = ZOTERO_DIR / "zotero.sqlite"
 FULLTEXT_SQLITE = ZOTERO_DIR / "fulltext.sqlite"
 STORAGE_DIR = ZOTERO_DIR / "storage"
 BBT_MIGRATED = ZOTERO_DIR / "better-bibtex.migrated"
-BBT_RPC_URL = os.environ.get("ZSEARCH_BBT_URL", "http://localhost:23119/better-bibtex/json-rpc")
+BBT_RPC_URL = os.environ.get("ZOTGEMMA_BBT_URL", "http://localhost:23119/better-bibtex/json-rpc")
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-INDEX_DB = Path(os.environ.get("ZSEARCH_INDEX_DB", PROJECT_DIR / "data" / "index.sqlite")).expanduser()
+INDEX_DB = Path(os.environ.get("ZOTGEMMA_INDEX_DB", PROJECT_DIR / "data" / "index.sqlite")).expanduser()
 GOLDEN_YAML = PROJECT_DIR / "tests" / "golden.yaml"
 
 MODEL_ID = "google/embeddinggemma-2"

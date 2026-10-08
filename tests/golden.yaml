@@ -1,4 +1,4 @@
-# Golden queries for `zsearch eval`. `expected` lists Zotero item keys; any one is an
+# Golden queries for `zotgemma eval`. `expected` lists Zotero item keys; any one is an
 # acceptable answer. Built from the library itself (see notes for what each tests).
 queries:
   # --- concept: paraphrase of the paper's idea, avoiding its title words ---------

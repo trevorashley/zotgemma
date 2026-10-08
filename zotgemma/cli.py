@@ -1,4 +1,4 @@
-"""``zsearch`` command-line interface."""
+"""``zotgemma`` command-line interface."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def status(missing: Annotated[bool, typer.Option("--missing", help="List PDFs wi
         console.print(t2)
         conn.close()
     else:
-        console.print(f"[yellow]No index yet at {config.INDEX_DB}; run `zsearch index`.[/yellow]")
+        console.print(f"[yellow]No index yet at {config.INDEX_DB}; run `zotgemma index`.[/yellow]")
     if missing:
         for a in no_text:
             console.print(f"  no text: {a.key}  {a.filename}")

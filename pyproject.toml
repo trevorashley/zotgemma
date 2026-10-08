@@ -1,7 +1,7 @@
 [project]
-name = "zotero-search"
+name = "zotgemma"
 version = "0.1.0"
-description = "Semantic + keyword search over a local Zotero library"
+description = "A better Zotero search that leverages EmbeddingGemma 2."
 readme = "README.md"
 authors = [{ name = "Trevor Ashley", email = "trevor.ashley@gmail.com" }]
 requires-python = ">=3.14"
@@ -19,8 +19,8 @@ dependencies = [
 ]
 
 [project.scripts]
-zsearch = "zsearch.cli:app"
-zsearch-mcp = "zsearch.mcp_server:main"
+zotgemma = "zotgemma.cli:app"
+zotgemma-mcp = "zotgemma.mcp_server:main"
 
 [dependency-groups]
 dev = ["pytest"]
@@ -30,7 +30,7 @@ requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "zsearch"
+module-name = "zotgemma"
 module-root = ""
 
 [tool.pytest.ini_options]

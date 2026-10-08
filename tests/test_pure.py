@@ -1,12 +1,12 @@
 """Tests for pure helper functions (no Zotero, model or network needed)."""
 
-from zsearch.embedder import build_document, truncate
-from zsearch.evaluation import recall_at_k
-from zsearch.fulltext import sanitize_fts_query
-from zsearch.index import build_item_body, item_document
-from zsearch.models import Item
-from zsearch.search import parse_year_range, rrf_fuse
-from zsearch.zotero_db import format_creator, parse_year
+from zotgemma.embedder import build_document, truncate
+from zotgemma.evaluation import recall_at_k
+from zotgemma.fulltext import sanitize_fts_query
+from zotgemma.index import build_item_body, item_document
+from zotgemma.models import Item
+from zotgemma.search import parse_year_range, rrf_fuse
+from zotgemma.zotero_db import format_creator, parse_year
 
 import numpy as np
 
@@ -67,7 +67,7 @@ def test_build_item_body_with_abstract():
 
 
 def test_build_item_body_fallback_text_truncated_and_collapsed():
-    from zsearch import config
+    from zotgemma import config
 
     body = build_item_body("", None, "", "", "foo \n\n  bar" + " x" * 10000)
     assert body.startswith("foo bar x")
@@ -120,7 +120,7 @@ def _item(mod="2020", abstract="a"):
 
 
 def test_is_unchanged_requires_trusted_hash():
-    from zsearch.index import is_unchanged
+    from zotgemma.index import is_unchanged
 
     old = {"date_modified": "2020", "fulltext_mtime": 1.0, "doc_text_hash": "h"}
     assert is_unchanged(old, _item(), 1.0, True, False)
@@ -134,7 +134,7 @@ def test_is_unchanged_requires_trusted_hash():
 
 
 def test_skip_front_matter():
-    from zsearch.index import skip_front_matter
+    from zotgemma.index import skip_front_matter
 
     t = "Series editor blurb\nSpringer\n\nPreface\nThis book is about passivity.\n"
     assert skip_front_matter(t).startswith("Preface")
@@ -145,9 +145,9 @@ def test_skip_front_matter():
 
 
 def test_best_attachment_prefers_largest_cache(tmp_path, monkeypatch):
-    from zsearch import config
-    from zsearch.models import Attachment
-    from zsearch.zotero_db import best_attachment
+    from zotgemma import config
+    from zotgemma.models import Attachment
+    from zotgemma.zotero_db import best_attachment
 
     monkeypatch.setattr(config, "STORAGE_DIR", tmp_path)
     for key, n in (("AAA", 5), ("BBB", 50)):
@@ -161,7 +161,7 @@ def test_best_attachment_prefers_largest_cache(tmp_path, monkeypatch):
 def test_migrated_citekeys_only_fill_missing(monkeypatch):
     import sqlite3
 
-    from zsearch import citekeys, index
+    from zotgemma import citekeys, index
 
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE items (key TEXT, citekey TEXT)")
@@ -176,7 +176,7 @@ def test_migrated_citekeys_only_fill_missing(monkeypatch):
 
 
 def test_skip_front_matter_inline_abstract_beats_later_headings():
-    from zsearch.index import skip_front_matter
+    from zotgemma.index import skip_front_matter
 
     t = "Title\n\x0cAbstract This monograph presents...\nmore\n1 Introduction\nbody\nContents\n"
     assert skip_front_matter(t).startswith("Abstract This monograph")
@@ -185,7 +185,7 @@ def test_skip_front_matter_inline_abstract_beats_later_headings():
 
 
 def test_skip_front_matter_contents_regex_is_anchored():
-    from zsearch.index import skip_front_matter
+    from zotgemma.index import skip_front_matter
 
     t = "Journal X\nContents lists available at ScienceDirect\nstuff\nSee the table of contents for details\n"
     assert skip_front_matter(t) == t  # neither line is a bare heading
@@ -194,7 +194,7 @@ def test_skip_front_matter_contents_regex_is_anchored():
 
 def test_needs_recheck_on_doc_format_change_only_for_abstractless():
     """A doc_format bump re-hashes abstract-less items but leaves abstract items alone."""
-    from zsearch.index import needs_recheck
+    from zotgemma.index import needs_recheck
 
     old = {"date_modified": "2020", "fulltext_mtime": 1.0, "doc_text_hash": "h"}
     assert not needs_recheck(old, _item(abstract="a"), 1.0, True, False, True)
@@ -205,8 +205,8 @@ def test_needs_recheck_on_doc_format_change_only_for_abstractless():
 
 def test_skip_front_matter_abstract_window_and_contents_lines():
     """Deep "abstract" lines (chapter abstracts, captions, contents entries) must not win over a preface."""
-    from zsearch import config
-    from zsearch.index import skip_front_matter
+    from zotgemma import config
+    from zotgemma.index import skip_front_matter
 
     filler = "lorem ipsum\n" * (config.ABSTRACT_SEARCH_CHARS // 12 + 10)
     book = "Series blurb\nPreface\nWhy this book.\n" + filler + "Abstract This chapter covers...\n"
