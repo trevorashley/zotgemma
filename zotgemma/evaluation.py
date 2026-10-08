@@ -36,7 +36,7 @@ class GoldenQuery:
 
 
 def load_golden(path: Path | None = None) -> list[GoldenQuery]:
-    """Parse ``tests/golden.yaml``."""
+    """Parse a golden-set YAML file (default: ``tests/golden.yaml`` if it exists)."""
     path = path or config.GOLDEN_YAML
     data = yaml.safe_load(path.read_text())
     return [GoldenQuery(e["query"], list(e["expected"]), e.get("kind", ""), e.get("note", "")) for e in data["queries"]]

@@ -47,6 +47,18 @@ class EmbedderInfo:
     sanity: str
 
 
+def pick_device(requested: str | None, mps: bool, cuda: bool) -> str:
+    """Choose the torch device: ``requested`` if given and available, else mps, cuda, then cpu."""
+    available = {"mps": mps, "cuda": cuda, "cpu": True}
+    if requested:
+        if requested not in available:
+            raise RuntimeError(f"Unknown device {requested!r}; use one of {', '.join(available)}")
+        if not available[requested]:
+            raise RuntimeError(f"Device {requested!r} was requested but is not available on this machine")
+        return requested
+    return "mps" if mps else ("cuda" if cuda else "cpu")
+
+
 def _load_model(model_id: str, device: str, dtype):
     """Load the text-only model, preferring the local HF cache (no Hub traffic) and
     falling back to a download if it is not cached yet."""
@@ -71,10 +83,11 @@ class Embedder:
     non-finite or the similarity sanity check fails. fp16 is never used.
     """
 
-    def __init__(self, model_id: str = config.MODEL_ID) -> None:
+    def __init__(self, model_id: str = config.MODEL_ID, device: str | None = None) -> None:
         import torch
         self.model_id = model_id
-        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        device = pick_device(device or config.DEVICE, torch.backends.mps.is_available(), torch.cuda.is_available())
+        self.batch_size = config.default_batch_size(device)
         candidates = [torch.bfloat16, torch.float32] if device != "cpu" else [torch.float32]
         self.info: EmbedderInfo | None = None
         last_err = "no candidate dtype tried"
@@ -107,9 +120,9 @@ class Embedder:
                                normalize_embeddings=True)
         return np.asarray(v, dtype=np.float32)
 
-    def embed_documents_raw(self, texts: list[str], batch_size: int = config.EMBED_BATCH_SIZE) -> np.ndarray:
+    def embed_documents_raw(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
         """Embed pre-built document strings with no prompt (see :func:`build_document`)."""
-        v = self._model.encode(texts, batch_size=batch_size, convert_to_numpy=True,
+        v = self._model.encode(texts, batch_size=batch_size or self.batch_size, convert_to_numpy=True,
                                normalize_embeddings=True, show_progress_bar=False)
         return np.asarray(v, dtype=np.float32)
 
