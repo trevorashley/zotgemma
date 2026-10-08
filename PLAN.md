@@ -333,70 +333,98 @@ cite keys and quotable passages, without you opening Zotero.
 
 ---
 
-## Phase 4: topics (the inverse problem: cluster the library into auto-collections)
+## Phase 4: topics (the inverse problem: organise the library into overlapping, nested topics)
 
-Goal: `zotgemma topics` groups the whole library into a two-level tree of named topics, shows how
-each topic lines up with the user's Zotero collections, and points out uncollected or possibly
-misfiled items. Like collections, but derived from the content.
+Goal: `zotgemma topics` organises the whole library into major topics with minor topics inside
+them, where an item may belong to several topics and a minor topic may sit under several majors.
+Like collections, but derived from the content and not limited to one place per item.
 
-Experiment (2026-10-08, item vectors from Phase 1, scikit-learn, ~1 s): k-means and Ward linkage at
-k=20 both gave balanced, readable topics (root locus; safe RL; consensus; Kalman/Bayesian filtering;
-temporal logic; synthetic aperture sonar; differential geometry; geometric mechanics; convex and
-Riemannian optimization; control education; C++ design patterns; MPC; ...). Adjusted mutual
-information against the top-level collection was 0.33, which is expected: "Reviews" is a
-document-type collection and spreads over a dozen topics. Average-linkage agglomerative failed
-(one 973-item cluster plus singletons); do not use it. Abstract-less books titled from filenames
-formed junk clusters keyed on "pdf", so Phase 2 (chunk vectors) should land first.
+Experiments (2026-10-08, item vectors from Phase 1, scikit-learn, seconds):
+- k-means and Ward at k=20 both gave balanced, readable topics (root locus; safe RL; consensus;
+  Kalman/Bayesian filtering; temporal logic; synthetic aperture sonar; differential geometry;
+  geometric mechanics; convex and Riemannian optimisation; control education; C++ design patterns;
+  MPC; ...). Average-linkage agglomerative failed (one 973-item cluster plus singletons); do not use it.
+- Multi-membership is real: 94 of 1,243 items are already in more than one Zotero collection (80 are in
+  none). With 40 fine topics, 151 items have a second centroid within 0.01 cosine of their best and 377
+  within 0.02.
+- Shared sub-topics are real: with 8 majors and 40 minors, 14 minors have no major holding 70% of their
+  items. Examples: equivariant/Lie-group filtering splits robotics 33% / underwater navigation 20% /
+  control 20%; stochastic control splits optimisation 44% / geometry 33%; LMI/Lyapunov stability splits
+  two control majors 47% / 46%. A tree cannot represent this; the structure is a DAG.
+- Adjusted mutual information against the top-level collection was 0.33, expected since "Reviews" is a
+  document-type collection. Abstract-less books titled from filenames formed junk clusters keyed on
+  "pdf"; Phase 2 (chunk vectors) should land first.
 
 Depends on Phase 1 only; benefits from Phase 2. Independent of Phase 3.
 
-1. **Clustering core (`topics.py`).** Load all item vectors from `vec_items`. Ward linkage on the
-   unit vectors (scikit-learn `AgglomerativeClustering`, `linkage="ward"`), cut at two levels:
-   parents (~6-10) and children (~30-50). Choose each cut by silhouette score over a range rather
-   than a fixed k; `--k` and `--parents` override. Record per item: parent, child, distance to its
-   centroid and margin to the second-nearest centroid (small margin = "ambiguous"). Persist in a
-   `topics` table (topic_id, parent_id, level, name, terms, size, centroid blob) and an
-   `item_topics` table (item_id, topic_id, distance, margin) in the index DB, with a `meta` key for
-   the clustering run id. Add `scikit-learn` as a dependency.
+Model of the output:
+- **Levels.** Majors (~6-10) and minors (~30-60), clustered independently on the same vectors (k-means
+  with several restarts, or Ward), each cut chosen by silhouette over a range; `--majors K --minors K`
+  override. A third level (`--depth 3`) is produced by clustering within each minor.
+- **DAG, not tree.** Every minor is linked to every major that holds at least `--link-share` (default
+  20%) of its items; the edge carries the share, so a minor can read "Reinforcement learning: Control
+  65%, Artificial intelligence 30%". Each item's own major and minor memberships are computed the same
+  way, independently.
+- **Multi-membership for items.** An item belongs to its best topic and to every other topic whose
+  centroid similarity is within `--margin` (default 0.02 cosine) of the best, at each level. After
+  Phase 2, chunk share is the second signal: an item also belongs to any topic holding at least
+  `--chunk-share` (default 25%) of its chunks, so a book spanning subjects appears under each. Every
+  membership carries a weight (similarity or chunk share) and the display marks the primary one.
+- **Seeded majors (optional).** `--seed "guidance, navigation, control"` embeds each phrase with the
+  query prompt and uses them as fixed anchors for the major level: items are assigned to the nearest
+  seed when within a threshold, and the remaining items are clustered freely into additional majors.
+  This lets the user impose a mental model at the top while the minors emerge from the data.
 
-2. **Naming.** Deterministic labels first: class-based TF-IDF (1-2 grams, English stop words,
-   `max_df` 0.3) over title + abstract, top 6 terms per topic. Optional `--name-with ollama:<model>`
-   or `--name-with claude` sends the top ten titles of each topic and asks for a 2-4 word name;
-   store both, display the generated name with the terms underneath. Never block on a naming
-   backend: fall back to the terms.
+1. **Clustering core (`topics.py`).** Load item vectors from `vec_items` (and chunk vectors after
+   Phase 2). Compute majors and minors, the minor-to-major edges, and per-item memberships with weights
+   and margins as above. Persist in `topics` (topic_id, level, name, terms, size, centroid blob),
+   `topic_edges` (child_id, parent_id, share) and `item_topics` (item_id, topic_id, weight, primary)
+   in the index DB, with a `meta` key for the run id and parameters. Add `scikit-learn` as a
+   dependency.
 
-3. **Comparison with collections.** For each topic: the best-matching Zotero collection (by
-   overlap), its purity, and the count of items with no collection. Two reports:
-   `topics --uncollected` lists items in no collection grouped by topic (a ready-made filing list);
-   `topics --misfiled` lists items whose topic's dominant collection differs from their own, sorted
-   by centroid distance (most confident first). Both are read-only.
+2. **Naming.** Deterministic labels: class-based TF-IDF (1-2 grams, English stop words, `max_df` 0.3)
+   over title + abstract, top 6 terms per topic. Optional `--name-with ollama:<model>` or
+   `--name-with claude` sends the top ten titles (by weight) of each topic and asks for a 2-4 word
+   name; store both. Never block on a naming backend; fall back to the terms. Seeded majors keep their
+   seed names.
 
-4. **CLI and output.** `zotgemma topics` prints the tree (name, size, terms, matching collection,
-   three medoid titles). `--json` for scripting; `--items <topic>` lists a topic's members with
-   citekeys and links. `--map out.html` writes a self-contained 2-D map (PCA or UMAP if installed,
-   never a hard dependency) with one point per item, coloured by parent topic, hover showing title
-   and citekey, click opening the `zotero://select` link.
+3. **Comparison with collections.** Per topic: the best-matching Zotero collection by overlap, its
+   purity, and the count of items in no collection. Multi-label evaluation uses the 94 multi-collection
+   items as ground truth for multi-membership (precision/recall of the predicted extra memberships
+   against the extra collections). Two read-only reports: `topics --uncollected` groups the items in no
+   collection by their primary topic (a filing list); `topics --misfiled` lists items whose topics'
+   dominant collections all differ from their own, most confident first.
 
-5. **Stability across syncs.** `zotgemma index` assigns new items to the nearest existing
-   centroid (child, then parent) so topics stay usable between full runs. `zotgemma topics
-   --recluster` recomputes everything and matches new topics to old ones by centroid similarity
-   (Hungarian assignment) so ids and generated names carry over where the topic persisted.
+4. **CLI and output.** `zotgemma topics` prints majors, with minors beneath them and shared minors
+   repeated under each parent with the share. Per topic: name, size, terms, matching collection, three
+   medoid titles. `--items <topic>` lists members with weight, citekey and link; `--item <citekey>`
+   lists every topic an item belongs to. `--json` emits the full DAG and memberships. `--map out.html`
+   writes a self-contained 2-D map (PCA; UMAP if installed, never a hard dependency) coloured by primary
+   major, hover showing title, citekey and all memberships, click opening the `zotero://select` link.
 
-6. **Experiments to run and record in Benchmarks.** (a) Re-embed with EmbeddingGemma 2's
-   clustering prompt (`task: clustering | query: ...`, ~10 min) into a separate `vec_items_cluster`
-   table and compare silhouette and collection AMI against the retrieval vectors; keep whichever
-   wins. (b) After Phase 2: soft membership, an item belongs to every topic that holds at least a
-   configurable share of its chunks, so books spanning subjects appear under each.
+5. **Stability across syncs.** `zotgemma index` assigns new items to existing centroids using the same
+   margin rule. `zotgemma topics --recluster` recomputes everything and matches new topics to old ones
+   by centroid similarity (Hungarian assignment) so ids and generated names carry over where the topic
+   persisted; unmatched topics are reported as new or dissolved.
+
+6. **Experiments to run and record in Benchmarks.** (a) Re-embed with EmbeddingGemma 2's clustering
+   prompt (`task: clustering | query: ...`, ~10 min) into a separate `vec_items_cluster` table and
+   compare silhouette, collection AMI and multi-label precision against the retrieval vectors; keep
+   whichever wins. (b) Sweep `--margin` and `--chunk-share` against the multi-collection ground truth
+   to choose the defaults. (c) Compare independent-level clustering plus share edges against top-down
+   clustering within each major (clean nesting, no shared minors) on the same metrics.
 
 7. **Writing back to Zotero (later, opt-in).** SQLite is never written. If wanted, `topics --push`
-   creates collections through the Zotero Web API (pyzotero, needs an API key with write access)
-   under one parent collection named "Auto topics", adds items by key, and never modifies existing
-   collections. Requires explicit confirmation on every run and a dry-run listing first. Out of
-   scope until the read-only reports have been used for a while.
+   creates collections through the Zotero Web API (pyzotero, API key with write access) under one
+   parent "Auto topics": one sub-collection per major, minors nested beneath, shared minors created
+   once and items added to every topic they belong to (Zotero allows an item in many collections).
+   Never modifies existing collections; dry-run listing first and explicit confirmation on every run.
+   Out of scope until the read-only reports have been used for a while.
 
-Phase 4 exit: `zotgemma topics` produces a tree you would accept as a first draft of collections,
-the uncollected report files the items currently in no collection, and the Phase 2 chunk vectors
-have removed the filename-titled junk clusters.
+Phase 4 exit: `zotgemma topics` produces majors and minors you would accept as a first draft of
+collections, shared minors appear under each of their majors with sensible shares, multi-membership
+recovers most of the 94 multi-collection items, the uncollected report files the 80 items in no
+collection, and the Phase 2 chunk vectors have removed the filename-titled junk clusters.
 
 ---
 
